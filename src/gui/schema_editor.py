@@ -120,7 +120,7 @@ class SchemaEditor:
         # Columns section
         with dpg.group(horizontal=True):
             dpg.add_text("Output Columns", color=(100, 149, 237))
-            dpg.add_spacer(width=-80)
+            dpg.add_spacer(width=-1)
             dpg.add_button(
                 label="+ Add Column",
                 callback=self._add_column_row,
@@ -420,11 +420,10 @@ class SchemaEditor:
             width=300,
             height=100,
             pos=[550, 400],
-            no_resize=True,
             on_close=lambda: dpg.delete_item("error_popup")
         ) as popup:
             dpg.set_item_alias(popup, "error_popup")
-            dpg.add_text(message, wrap=280, color=(231, 76, 60))
+            dpg.add_text(message, wrap=-1, color=(231, 76, 60))
             dpg.add_spacer(height=10)
             dpg.add_button(
                 label="OK",
@@ -440,11 +439,10 @@ class SchemaEditor:
             width=300,
             height=100,
             pos=[550, 400],
-            no_resize=True,
             on_close=lambda: dpg.delete_item("success_popup")
         ) as popup:
             dpg.set_item_alias(popup, "success_popup")
-            dpg.add_text(message, wrap=280, color=(46, 204, 113))
+            dpg.add_text(message, wrap=-1, color=(46, 204, 113))
             dpg.add_spacer(height=10)
             dpg.add_button(
                 label="OK",

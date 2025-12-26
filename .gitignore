@@ -163,13 +163,18 @@ data/output/*
 # Vector store database files
 data/vector_store/*
 !data/vector_store/.gitkeep
+inputs/
 
 # API keys and secrets
 .env
+*.env
 .env.local
 .env.*.local
 *.key
 *.pem
+
+# User preferences
+.bids_prefs.json
 
 # Logs
 *.log
@@ -182,6 +187,9 @@ logs/
 *.swp
 *~
 
+# Cache directory (checkpoints and temporary data)
+cache/
+
 # ChromaDB specific
 chroma.sqlite3
 *.sqlite3
@@ -189,3 +197,9 @@ chroma.sqlite3
 
 # Schemas
 schemas/
+
+# local LLMs
+models/
+
+# Cursor
+.cursor/

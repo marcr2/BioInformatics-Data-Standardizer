@@ -8,11 +8,16 @@ import dearpygui.dearpygui as dpg
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import threading
+import queue
 
 from .file_panel import FilePanel
 from .schema_editor import SchemaEditor
 from .process_panel import ProcessPanel
 from .results_panel import ResultsPanel
+from .embedding_map_panel import EmbeddingMapPanel
+from .agent_monitor_panel import AgentMonitorPanel, set_agent_monitor
+from .cycle_visualization_panel import CycleVisualizationPanel
+from .data_state_panel import DataStatePanel
 
 
 class BIDSApp:
@@ -55,15 +60,34 @@ class BIDSApp:
         self.current_schema = None
         self.processing = False
         
+        # Thread-safe UI update queue
+        self.ui_update_queue = queue.Queue()
+        
         # Panels (initialized in setup)
         self.file_panel: Optional[FilePanel] = None
         self.schema_editor: Optional[SchemaEditor] = None
         self.process_panel: Optional[ProcessPanel] = None
         self.results_panel: Optional[ResultsPanel] = None
+        self.embedding_map_panel: Optional[EmbeddingMapPanel] = None
+        self.agent_monitor_panel: Optional[AgentMonitorPanel] = None
+        self.cycle_viz_panel: Optional[CycleVisualizationPanel] = None
+        self.data_state_panel: Optional[DataStatePanel] = None
+        
+        # Checkpoint manager (shared)
+        from ..utils.checkpoint_manager import CheckpointManager
+        self.checkpoint_manager = CheckpointManager()
         
     def setup(self) -> None:
         """Set up Dear PyGui context and windows."""
         dpg.create_context()
+        
+        # Ensure inputs directory exists
+        inputs_dir = Path("inputs")
+        inputs_dir.mkdir(exist_ok=True)
+        
+        # Ensure cache directory exists
+        cache_dir = Path("cache")
+        cache_dir.mkdir(exist_ok=True)
         
         # Configure viewport
         dpg.create_viewport(
@@ -227,9 +251,40 @@ class BIDSApp:
                             # Processing tab
                             with dpg.tab(label="Processing"):
                                 self.process_panel = ProcessPanel(
-                                    on_process_complete=self._on_process_complete
+                                    on_process_complete=self._on_process_complete,
+                                    main_app=self
                                 )
+                                # Set checkpoint manager
+                                self.process_panel.checkpoint_manager = self.checkpoint_manager
                                 self.process_panel.create()
+                            
+                            # Embedding Map tab - Interactive visualization
+                            with dpg.tab(label="Embedding Map"):
+                                self.embedding_map_panel = EmbeddingMapPanel(
+                                    get_current_data_callback=lambda: self.current_df
+                                )
+                                self.embedding_map_panel.create()
+                            
+                            # Agent Monitor tab - Real-time LLM activity
+                            with dpg.tab(label="Agent Monitor"):
+                                self.agent_monitor_panel = AgentMonitorPanel()
+                                self.agent_monitor_panel.create()
+                                # Register as global monitor for callbacks
+                                set_agent_monitor(self.agent_monitor_panel)
+                            
+                            # Cycle Visualization tab - Processing cycle diagram
+                            with dpg.tab(label="Cycle Visualization"):
+                                self.cycle_viz_panel = CycleVisualizationPanel(
+                                    checkpoint_manager=self.checkpoint_manager
+                                )
+                                self.cycle_viz_panel.create()
+                            
+                            # Data State tab - Last checkpoint data
+                            with dpg.tab(label="Data State"):
+                                self.data_state_panel = DataStatePanel(
+                                    checkpoint_manager=self.checkpoint_manager
+                                )
+                                self.data_state_panel.create()
             
             dpg.add_spacer(height=10)
             
@@ -279,10 +334,6 @@ class BIDSApp:
             
             with dpg.menu(label="Settings"):
                 dpg.add_menu_item(
-                    label="API Keys...",
-                    callback=self._menu_api_keys
-                )
-                dpg.add_menu_item(
                     label="Preferences...",
                     callback=self._menu_preferences
                 )
@@ -303,7 +354,7 @@ class BIDSApp:
             dpg.add_text("BIDS", color=self.COLORS["accent"])
             dpg.add_text(" - Bioinformatics Data Standardizer", color=self.COLORS["text_dim"])
             
-            dpg.add_spacer(width=-200)
+            dpg.add_spacer(width=-1)
             
             # Quick action buttons
             self.btn_diagnose = dpg.add_button(
@@ -313,7 +364,7 @@ class BIDSApp:
             )
             dpg.add_spacer(width=5)
             self.btn_fix = dpg.add_button(
-                label="Fix & Export",
+                label="Run Full Process",
                 callback=self._on_fix_click,
                 enabled=False
             )
@@ -324,7 +375,7 @@ class BIDSApp:
         with dpg.group(horizontal=True):
             self.status_text = dpg.add_text("Ready", color=self.COLORS["text_dim"])
             
-            dpg.add_spacer(width=-300)
+            dpg.add_spacer(width=-1)
             
             self.progress_bar = dpg.add_progress_bar(
                 default_value=0.0,
@@ -341,20 +392,41 @@ class BIDSApp:
     
     # Callback handlers
     def _on_file_loaded(self, df, file_path: str) -> None:
-        """Handle file loaded callback."""
-        self.current_df = df
+        """Handle file loaded callback (may be called from background thread)."""
+        # Queue UI update to run in main thread
+        self.ui_update_queue.put(('file_loaded', df, file_path))
         
-        # Update status
-        dpg.set_value(self.status_text, f"Loaded: {Path(file_path).name}")
-        
-        # Enable buttons
-        dpg.configure_item(self.btn_diagnose, enabled=True)
-        if self.current_schema:
-            dpg.configure_item(self.btn_fix, enabled=True)
-        
-        # Update preview
-        if self.results_panel:
-            self.results_panel.show_dataframe(df)
+        # Update process panel with data
+        if self.process_panel:
+            self.process_panel.set_data(df, self.current_schema)
+    
+    def _process_ui_updates(self) -> None:
+        """Process queued UI updates from background threads."""
+        try:
+            while True:
+                update_type, *args = self.ui_update_queue.get_nowait()
+                
+                if update_type == 'file_loaded':
+                    df, file_path = args
+                    self.current_df = df
+                    
+                    # Update status
+                    dpg.set_value(self.status_text, f"Loaded: {Path(file_path).name}")
+                    
+                    # Enable buttons
+                    dpg.configure_item(self.btn_diagnose, enabled=True)
+                    if self.current_schema:
+                        dpg.configure_item(self.btn_fix, enabled=True)
+                    
+                    # Update preview
+                    if self.results_panel:
+                        self.results_panel.show_dataframe(df)
+                    
+                    # Update process panel with data
+                    if self.process_panel:
+                        self.process_panel.set_data(df, self.current_schema)
+        except queue.Empty:
+            pass
     
     def _on_schema_changed(self, schema) -> None:
         """Handle schema changed callback."""
@@ -366,6 +438,10 @@ class BIDSApp:
         # Enable fix button if data loaded
         if self.current_df is not None:
             dpg.configure_item(self.btn_fix, enabled=True)
+        
+        # Update process panel with schema
+        if self.process_panel and self.current_df is not None:
+            self.process_panel.set_data(self.current_df, schema)
     
     def _on_process_complete(self, result: Dict[str, Any]) -> None:
         """Handle processing complete callback."""
@@ -381,31 +457,40 @@ class BIDSApp:
             dpg.set_value(self.status_text, "Processing complete - Issues remain")
     
     def _on_diagnose_click(self) -> None:
-        """Handle diagnose button click."""
+        """Handle diagnose button click - updates both main status and processing tab."""
         if self.current_df is None:
             return
         
+        # Update main status bar
         dpg.set_value(self.status_text, "Diagnosing...")
         dpg.set_value(self.progress_bar, 0.3)
         dpg.configure_item(self.progress_bar, overlay="Diagnosing...")
         
+        # Update processing tab status
         if self.process_panel:
+            self.process_panel._update_status("Diagnosing...", 0.3)
+            self.process_panel._log("Starting diagnosis...")
             self.process_panel.run_diagnosis(
                 self.current_df,
                 self.current_schema
             )
     
     def _on_fix_click(self) -> None:
-        """Handle fix button click."""
+        """Handle fix button click - updates both main status and processing tab."""
         if self.current_df is None or self.current_schema is None:
             return
         
         self.processing = True
+        
+        # Update main status bar
         dpg.set_value(self.status_text, "Processing...")
         dpg.set_value(self.progress_bar, 0.0)
         dpg.configure_item(self.progress_bar, overlay="Processing...")
         
+        # Update processing tab status
         if self.process_panel:
+            self.process_panel._update_status("Processing...", 0.1)
+            self.process_panel._log("Starting full process...")
             self.process_panel.run_full_process(
                 self.current_df,
                 self.current_schema
@@ -445,17 +530,14 @@ class BIDSApp:
         if self.schema_editor:
             self.schema_editor.show_load_dialog()
     
-    def _menu_api_keys(self) -> None:
-        """API keys menu callback."""
-        self._show_api_keys_dialog()
-    
     def _menu_preferences(self) -> None:
         """Preferences menu callback."""
-        pass  # TODO: Implement preferences
+        self._show_preferences_dialog()
     
     def _menu_documentation(self) -> None:
         """Documentation menu callback."""
-        pass  # TODO: Open documentation
+        import webbrowser
+        webbrowser.open("https://github.com/marcr2/BioInformatics-Data-Standardizer")
     
     def _menu_about(self) -> None:
         """About menu callback."""
@@ -469,7 +551,6 @@ class BIDSApp:
             width=400,
             height=250,
             pos=[500, 300],
-            no_resize=True,
             on_close=lambda: dpg.delete_item("about_dialog")
         ) as dialog:
             dpg.set_item_alias(dialog, "about_dialog")
@@ -486,81 +567,209 @@ class BIDSApp:
             )
             dpg.add_spacer(height=20)
             dpg.add_text("Powered by:")
-            dpg.add_text("  - Google Gemini (Diagnostics)")
-            dpg.add_text("  - Claude Opus (Fix Generation)")
-            dpg.add_spacer(height=20)
-            dpg.add_button(
-                label="Close",
-                callback=lambda: dpg.delete_item("about_dialog"),
-                width=-1
-            )
+            dpg.add_text("  - Local LLM (100% Private)")
+            dpg.add_text("  - No API calls, all processing local")
     
-    def _show_api_keys_dialog(self) -> None:
-        """Show API keys configuration dialog."""
-        import os
-        from dotenv import load_dotenv, set_key
+    def _show_preferences_dialog(self) -> None:
+        """Show the preferences dialog."""
+        from ..utils.preferences import get_preferences
         
-        load_dotenv()
+        prefs = get_preferences()
+        gpu_info = prefs.get_gpu_info()
         
         with dpg.window(
-            label="API Keys Configuration",
+            label="Preferences",
             modal=True,
-            width=500,
-            height=280,
-            pos=[450, 250],
-            no_resize=True,
-            on_close=lambda: dpg.delete_item("api_keys_dialog")
+            width=600,
+            height=500,
+            pos=[400, 150],
+            on_close=lambda: dpg.delete_item("preferences_dialog")
         ) as dialog:
-            dpg.set_item_alias(dialog, "api_keys_dialog")
+            dpg.set_item_alias(dialog, "preferences_dialog")
             
-            dpg.add_text("Configure your LLM API keys:")
+            dpg.add_text("Application Preferences", color=self.COLORS["accent"])
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
             dpg.add_spacer(height=10)
             
-            dpg.add_text("Google Gemini API Key:", color=self.COLORS["text_dim"])
-            gemini_input = dpg.add_input_text(
-                default_value=os.getenv("GOOGLE_API_KEY", ""),
-                width=-1,
-                password=True
+            # GPU Acceleration Settings
+            dpg.add_text("GPU Acceleration", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            # GPU status
+            if gpu_info["available"]:
+                gpu_status_text = f"GPU: {gpu_info['device_name']} ({gpu_info['memory_gb']:.1f} GB)"
+                gpu_status_color = self.COLORS["success"]
+            else:
+                gpu_status_text = "GPU: Not available (will use CPU)"
+                gpu_status_color = self.COLORS["text_dim"]
+            
+            dpg.add_text(gpu_status_text, color=gpu_status_color)
+            dpg.add_spacer(height=5)
+            
+            # GPU toggle checkbox
+            gpu_enabled = prefs.is_gpu_enabled() if gpu_info["available"] else False
+            gpu_checkbox = dpg.add_checkbox(
+                label="Enable GPU Acceleration",
+                default_value=gpu_enabled,
+                enabled=gpu_info["available"],
+                callback=self._on_gpu_toggle_changed
             )
+            
+            if not gpu_info["available"]:
+                dpg.add_text(
+                    "Note: GPU not detected. Install CUDA-enabled PyTorch for GPU acceleration.",
+                    color=self.COLORS["warning"],
+                    wrap=-1
+                )
             
             dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
             
-            dpg.add_text("Anthropic API Key:", color=self.COLORS["text_dim"])
-            anthropic_input = dpg.add_input_text(
-                default_value=os.getenv("ANTHROPIC_API_KEY", ""),
-                width=-1,
-                password=True
-            )
+            # File settings
+            dpg.add_text("File Settings", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
             
-            dpg.add_spacer(height=20)
+            dpg.add_text("Default Input Directory:", color=self.COLORS["text_dim"])
+            inputs_path = Path("inputs").absolute()
+            dpg.add_text(str(inputs_path), color=(149, 165, 166))
+            dpg.add_spacer(height=10)
             
-            def save_keys():
-                env_path = Path(".env")
-                if not env_path.exists():
-                    env_path.touch()
-                
-                gemini_key = dpg.get_value(gemini_input)
-                anthropic_key = dpg.get_value(anthropic_input)
-                
-                if gemini_key:
-                    set_key(str(env_path), "GOOGLE_API_KEY", gemini_key)
-                if anthropic_key:
-                    set_key(str(env_path), "ANTHROPIC_API_KEY", anthropic_key)
-                
-                load_dotenv(override=True)
-                dpg.delete_item("api_keys_dialog")
+            # Display settings
+            dpg.add_text("Display Settings", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
             
+            dpg.add_text("Theme: Dark (default)", color=(149, 165, 166))
+            dpg.add_spacer(height=10)
+            
+            # Processing settings
+            dpg.add_text("Processing Settings", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            # Max fix attempts input
             with dpg.group(horizontal=True):
-                dpg.add_button(
-                    label="Save",
-                    callback=save_keys,
-                    width=100
+                dpg.add_text("Max fix attempts:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=10)
+                max_attempts = prefs.get("max_fix_attempts", 3)
+                dpg.add_input_int(
+                    default_value=max_attempts,
+                    min_value=1,
+                    max_value=10,
+                    width=80,
+                    callback=self._on_max_attempts_changed
                 )
-                dpg.add_button(
-                    label="Cancel",
-                    callback=lambda: dpg.delete_item("api_keys_dialog"),
-                    width=100
+            
+            dpg.add_spacer(height=5)
+            
+            # Auto-fix checkbox
+            auto_fix = prefs.get("auto_fix", True)
+            dpg.add_checkbox(
+                label="Auto-fix enabled",
+                default_value=auto_fix,
+                callback=self._on_auto_fix_changed
+            )
+            
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # Cache settings
+            dpg.add_text("Cache Settings", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            # Cache info
+            cache_dir = Path("cache")
+            cache_size = 0
+            if cache_dir.exists():
+                cache_size = sum(
+                    f.stat().st_size for f in cache_dir.rglob('*') if f.is_file()
                 )
+            cache_size_mb = cache_size / (1024 * 1024)
+            
+            dpg.add_text(f"Cache directory: {cache_dir.absolute()}", color=(149, 165, 166))
+            dpg.add_text(f"Cache size: {cache_size_mb:.2f} MB", color=(149, 165, 166))
+            dpg.add_spacer(height=5)
+            
+            # Clear cache button
+            dpg.add_button(
+                label="Clear Cache",
+                callback=self._on_clear_cache,
+                width=150
+            )
+            dpg.bind_item_theme(dpg.last_item(), self.error_theme)
+    
+    def _on_gpu_toggle_changed(self, sender, app_data) -> None:
+        """Handle GPU toggle checkbox change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        prefs.set("gpu_acceleration", app_data)
+        
+        # Show message
+        if app_data:
+            dpg.set_value(self.status_text, "GPU acceleration enabled (restart recommended)")
+        else:
+            dpg.set_value(self.status_text, "GPU acceleration disabled (restart recommended)")
+    
+    def _on_max_attempts_changed(self, sender, app_data) -> None:
+        """Handle max fix attempts input change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        # Ensure value is within valid range
+        value = max(1, min(10, app_data))
+        prefs.set("max_fix_attempts", value)
+        dpg.set_value(self.status_text, f"Max fix attempts set to {value}")
+    
+    def _on_auto_fix_changed(self, sender, app_data) -> None:
+        """Handle auto-fix checkbox change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        prefs.set("auto_fix", app_data)
+        
+        # Show message
+        status = "enabled" if app_data else "disabled"
+        dpg.set_value(self.status_text, f"Auto-fix {status}")
+    
+    def _on_clear_cache(self) -> None:
+        """Handle clear cache button click."""
+        import shutil
+        from pathlib import Path
+        
+        cache_dir = Path("cache")
+        
+        if not cache_dir.exists():
+            dpg.set_value(self.status_text, "Cache directory does not exist")
+            return
+        
+        # Clear checkpoint manager cache
+        if self.checkpoint_manager:
+            self.checkpoint_manager.clear_cache()
+        
+        # Clear entire cache directory
+        try:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+                cache_dir.mkdir(exist_ok=True)
+            
+            # Recreate checkpoint directory
+            checkpoint_dir = cache_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Update cycle visualization if available
+            if self.cycle_viz_panel:
+                self.cycle_viz_panel.update_stage("idle")
+            
+            # Update data state panel if available
+            if self.data_state_panel:
+                self.data_state_panel._load_latest()
+            
+            dpg.set_value(self.status_text, "Cache cleared successfully")
+            
+            # Refresh preferences dialog to show updated cache size
+            # (user would need to reopen preferences to see the change)
+            
+        except Exception as e:
+            dpg.set_value(self.status_text, f"Error clearing cache: {str(e)[:50]}")
     
     def run(self) -> None:
         """Run the application main loop."""
@@ -571,6 +780,13 @@ class BIDSApp:
         
         # Main loop
         while dpg.is_dearpygui_running():
+            # Process UI updates from background threads
+            self._process_ui_updates()
+            
+            # Process agent monitor updates
+            if self.agent_monitor_panel:
+                self.agent_monitor_panel.process_updates()
+            
             dpg.render_dearpygui_frame()
         
         dpg.destroy_context()

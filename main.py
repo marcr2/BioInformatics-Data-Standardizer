@@ -10,8 +10,14 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
+
+# Set PyTorch CUDA memory allocation config to reduce fragmentation
+# This helps with CUDA out of memory errors
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -56,29 +62,23 @@ def check_dependencies():
     return True
 
 
-def check_api_keys():
-    """Check if API keys are configured."""
-    import os
-    from dotenv import load_dotenv
-    
-    load_dotenv()
-    
-    warnings = []
-    
-    if not os.getenv("GOOGLE_API_KEY"):
-        warnings.append("GOOGLE_API_KEY not set (needed for diagnostics)")
-    
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        warnings.append("ANTHROPIC_API_KEY not set (needed for fix generation)")
-    
-    if warnings:
-        print("API Key Warnings:")
-        for warn in warnings:
-            print(f"  - {warn}")
-        print("\nYou can configure API keys in the Settings menu or .env file.")
+def check_gpu():
+    """Check if GPU is available for local LLM."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            print(f"GPU detected: {gpu_name} ({gpu_memory:.1f} GB VRAM)")
+            print("Local LLM will use GPU acceleration.")
+        else:
+            print("Warning: No GPU detected. Local LLM will run on CPU (slow).")
+            print("For best performance, use a GPU with at least 8GB VRAM.")
         print()
-    
-    return len(warnings) == 0
+        return True
+    except ImportError:
+        print("Warning: PyTorch not installed. Please install requirements.")
+        return False
 
 
 def run_gui():
@@ -90,8 +90,8 @@ def run_gui():
     if not check_dependencies():
         sys.exit(1)
     
-    # Check API keys (warning only)
-    check_api_keys()
+    # Check GPU availability (info only)
+    check_gpu()
     
     # Launch GUI
     try:

@@ -112,6 +112,10 @@ class FilePanel:
     
     def _create_file_dialog(self) -> None:
         """Create the file browser dialog."""
+        # Ensure inputs directory exists
+        inputs_dir = Path("inputs")
+        inputs_dir.mkdir(exist_ok=True)
+        
         with dpg.file_dialog(
             directory_selector=False,
             show=False,
@@ -137,6 +141,18 @@ class FilePanel:
     
     def show_file_dialog(self) -> None:
         """Show the file browser dialog."""
+        # Ensure inputs directory exists
+        inputs_dir = Path("inputs").absolute()
+        inputs_dir.mkdir(exist_ok=True)
+        
+        # Try to set the file dialog path (if supported)
+        try:
+            # Dear PyGui may support setting the path via configure_item
+            dpg.configure_item("file_dialog", default_path=str(inputs_dir))
+        except:
+            # If not supported, the dialog will open in the default location
+            pass
+        
         dpg.show_item("file_dialog")
     
     def _on_file_dialog_ok(self, sender, app_data) -> None:
@@ -198,6 +214,16 @@ class FilePanel:
             
             if result.dataframes:
                 df = result.dataframes[0]
+                
+                # Pre-process: Remove columns that are all NULL
+                original_cols = len(df.columns)
+                df = df.dropna(axis=1, how='all')
+                removed_cols = original_cols - len(df.columns)
+                
+                if removed_cols > 0:
+                    # Log the removal (will be shown in info text below)
+                    pass
+                
                 self.current_df = df
                 
                 # Update UI in main thread
@@ -205,6 +231,8 @@ class FilePanel:
                 
                 # Build info text
                 info = self._build_file_info(file_path, df, result)
+                if removed_cols > 0:
+                    info = f"Removed {removed_cols} empty column(s)\n\n" + info
                 dpg.set_value(self.info_text_tag, info)
                 
                 # Trigger callback

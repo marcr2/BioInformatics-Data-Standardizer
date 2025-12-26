@@ -43,17 +43,26 @@ class ProcessPanel:
     - Display generated fix scripts
     """
     
-    def __init__(self, on_process_complete: Optional[Callable] = None):
+    def __init__(self, on_process_complete: Optional[Callable] = None, main_app=None):
         """
         Initialize ProcessPanel.
         
         Args:
             on_process_complete: Callback when processing completes
+            main_app: Reference to main app for button callbacks
         """
         self.on_process_complete = on_process_complete
+        self.main_app = main_app  # Reference to main app
         self.orchestrator = None
         self.is_processing = False
         self.logs: List[str] = []
+        
+        # Data references (set by main app)
+        self.current_df: Optional[pd.DataFrame] = None
+        self.current_schema = None
+        
+        # Checkpoint manager (will be set by main app if available)
+        self.checkpoint_manager = None
         
         # UI tags
         self.log_text_tag: Optional[int] = None
@@ -106,10 +115,14 @@ class ProcessPanel:
             # Log tab
             with dpg.tab(label="Processing Log"):
                 with dpg.child_window(height=250, border=True):
-                    self.log_text_tag = dpg.add_text(
-                        "Processing log will appear here...",
-                        wrap=-1,
-                        color=(149, 165, 166)
+                    # Use input_text with readonly for selectable text
+                    self.log_text_tag = dpg.add_input_text(
+                        default_value="Processing log will appear here...",
+                        multiline=True,
+                        readonly=True,
+                        width=-1,
+                        height=-1,
+                        enabled=False  # Disable editing but allow selection
                     )
             
             # Script tab
@@ -123,23 +136,38 @@ class ProcessPanel:
         
         dpg.add_spacer(height=10)
         
-        # Action buttons
+        # Action buttons - styled like header buttons and call main app handlers
         with dpg.group(horizontal=True):
-            dpg.add_button(
-                label="Run Diagnosis",
-                callback=self._on_diagnose_click,
-                width=120
-            )
-            dpg.add_button(
+            # Get themes from main app if available
+            success_theme = None
+            if self.main_app and hasattr(self.main_app, 'success_theme'):
+                success_theme = self.main_app.success_theme
+            
+            # "Run Full Process" - Green (success theme) - matches "Fix & Export"
+            self.btn_process = dpg.add_button(
                 label="Run Full Process",
                 callback=self._on_process_click,
-                width=120
+                width=150
             )
-            dpg.add_spacer(width=-80)
+            if success_theme:
+                dpg.bind_item_theme(self.btn_process, success_theme)
+            
+            dpg.add_spacer(width=10)
+            
+            # "Diagnose" - Blue (accent color) - matches header button
+            # Uses default theme which is already blue (accent color)
+            self.btn_diagnose = dpg.add_button(
+                label="Diagnose",
+                callback=self._on_diagnose_click,
+                width=140
+            )
+            # No theme binding needed - default button uses accent blue color
+            
+            dpg.add_spacer(width=-1)
             dpg.add_button(
                 label="Clear Log",
                 callback=self._clear_log,
-                width=70
+                width=100
             )
     
     def _log(self, message: str) -> None:
@@ -152,6 +180,8 @@ class ProcessPanel:
         if self.log_text_tag:
             log_text = "\n".join(self.logs[-50:])  # Keep last 50 entries
             dpg.set_value(self.log_text_tag, log_text)
+            # Re-enable to allow text selection
+            dpg.configure_item(self.log_text_tag, enabled=True)
     
     def _clear_log(self) -> None:
         """Clear the log."""
@@ -222,13 +252,49 @@ class ProcessPanel:
             dpg.set_value(self.script_text_tag, script)
     
     def _on_diagnose_click(self) -> None:
-        """Handle diagnose button click."""
-        # This would be called from main app with data
-        self._log("Diagnosis requested - use run_diagnosis() with data")
+        """Handle diagnose button click - delegates to main app."""
+        if self.main_app:
+            # Call main app's handler which updates both locations
+            self.main_app._on_diagnose_click()
+        else:
+            # Fallback if no main app reference
+            if self.current_df is None:
+                self._log("Error: No data loaded. Please load a file first.")
+                return
+            
+            if self.current_schema is None:
+                self._log("Error: No schema selected. Please select a schema first.")
+                return
+            
+            self.run_diagnosis(self.current_df, self.current_schema)
     
     def _on_process_click(self) -> None:
-        """Handle process button click."""
-        self._log("Full process requested - use run_full_process() with data")
+        """Handle process button click - delegates to main app."""
+        if self.main_app:
+            # Call main app's handler which updates both locations
+            self.main_app._on_fix_click()
+        else:
+            # Fallback if no main app reference
+            if self.current_df is None:
+                self._log("Error: No data loaded. Please load a file first.")
+                return
+            
+            if self.current_schema is None:
+                self._log("Error: No schema selected. Please select a schema first.")
+                return
+            
+            self.run_full_process(self.current_df, self.current_schema)
+    
+    def set_data(self, df: pd.DataFrame, schema) -> None:
+        """
+        Set the current data and schema for processing.
+        
+        Args:
+            df: Current DataFrame
+            schema: Current schema
+        """
+        self.current_df = df
+        self.current_schema = schema
     
     def run_diagnosis(self, df: pd.DataFrame, schema) -> None:
         """
@@ -243,8 +309,9 @@ class ProcessPanel:
             return
         
         self.is_processing = True
-        self._update_status("Diagnosing...", 0.3)
-        self._log("Starting diagnosis...")
+        # Status already updated by main app handler
+        # self._update_status("Diagnosing...", 0.3)
+        # self._log("Starting diagnosis...")
         
         # Run in background thread
         thread = threading.Thread(
@@ -260,12 +327,30 @@ class ProcessPanel:
             DA, _, _ = get_agent_classes()
             
             if self.orchestrator:
+                # Ensure LLM is loaded (lazy loading)
+                self._log("Loading LLM model (first time may take 10-30 seconds)...")
+                self._update_status("Loading LLM...", 0.1)
+                self.orchestrator._ensure_llm_loaded()
                 agent = self.orchestrator.diagnostic_agent
             else:
                 agent = DA()
             
             self._log("Analyzing data structure...")
             self._update_status("Analyzing...", 0.5)
+            
+            # Save checkpoint before diagnosis
+            from ..utils.checkpoint_manager import ProcessingStage
+            if self.checkpoint_manager:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.DIAGNOSING,
+                    df=df,
+                    metadata={"action": "before_diagnosis"}
+                )
+                if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                    self.main_app.cycle_viz_panel.update_stage(ProcessingStage.DIAGNOSING)
+                    # Refresh data state panel
+                    if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                        self.main_app.data_state_panel._load_latest()
             
             # Run diagnosis
             result = agent.diagnose(
@@ -278,13 +363,40 @@ class ProcessPanel:
             self._log(f"Quality score: {result.quality_score:.2f}")
             self._log(f"Issues found: {len(result.issues)}")
             
-            # Update UI
+            # Save checkpoint after diagnosis
+            if self.checkpoint_manager:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.DIAGNOSING,
+                    df=df,
+                    metadata={
+                        "action": "after_diagnosis",
+                        "is_valid": result.is_valid,
+                        "quality_score": result.quality_score,
+                        "issues_count": len(result.issues)
+                    }
+                )
+                # Refresh data state panel
+                if self.main_app and hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                    self.main_app.data_state_panel._load_latest()
+            
+            # Update UI in both locations
             self._update_status("Diagnosis complete", 1.0)
             self._display_issues(result.issues)
+            
+            # Update main app status bar
+            if self.main_app:
+                dpg.set_value(self.main_app.status_text, "Diagnosis complete")
+                dpg.set_value(self.main_app.progress_bar, 1.0)
+                dpg.configure_item(self.main_app.progress_bar, overlay="Complete")
             
         except Exception as e:
             self._log(f"Diagnosis error: {str(e)}")
             self._update_status("Error", 0.0)
+            # Update main app status bar
+            if self.main_app:
+                dpg.set_value(self.main_app.status_text, f"Diagnosis error: {str(e)[:50]}")
+                dpg.set_value(self.main_app.progress_bar, 0.0)
+                dpg.configure_item(self.main_app.progress_bar, overlay="Error")
         
         finally:
             self.is_processing = False
@@ -302,8 +414,9 @@ class ProcessPanel:
             return
         
         self.is_processing = True
-        self._update_status("Processing...", 0.1)
-        self._log("Starting full process...")
+        # Status already updated by main app handler
+        # self._update_status("Processing...", 0.1)
+        # self._log("Starting full process...")
         
         # Run in background thread
         thread = threading.Thread(
@@ -321,45 +434,187 @@ class ProcessPanel:
             if not self.orchestrator:
                 raise Exception("Orchestrator not initialized")
             
-            self._log("Phase 1: Diagnosing data...")
-            self._update_status("Diagnosing...", 0.2)
+            # Import ProcessingStage for checkpoints
+            from ..utils.checkpoint_manager import ProcessingStage
             
-            # Run orchestrator
+            # Get preferences
+            from ..utils.preferences import get_preferences
+            prefs = get_preferences()
+            auto_fix = prefs.get("auto_fix", True)
+            max_attempts = prefs.get("max_fix_attempts", 3)
+            
+            # Phase 1: Rules-Based Preprocessing (BEFORE loading LLM)
+            self._log("Phase 1: Rules-based preprocessing...")
+            self._update_status("Preprocessing...", 0.05)
+            
+            # Save checkpoint before preprocessing
+            if self.checkpoint_manager:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.PREPROCESSING,
+                    df=df,
+                    metadata={"action": "before_preprocessing"}
+                )
+                if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                    self.main_app.cycle_viz_panel.update_stage(ProcessingStage.PREPROCESSING)
+                    # Refresh data state panel
+                    if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                        self.main_app.data_state_panel._load_latest()
+            
+            # Run orchestrator with preferences
+            # Note: The orchestrator now handles preprocessing internally before loading LLM
+            self._log("Running orchestrated pipeline (preprocess -> diagnose -> fix)...")
             process_result = self.orchestrator.process(
                 df,
                 schema_name=schema.name if hasattr(schema, 'name') else "IPA Standard",
-                auto_fix=True,
-                max_attempts=3
+                auto_fix=auto_fix,
+                max_attempts=max_attempts
             )
+            
+            # Log preprocessing results if available
+            preprocessing = process_result.get("preprocessing", {})
+            if preprocessing:
+                changes = preprocessing.get("changes_made", [])
+                remaining = preprocessing.get("issues_remaining", 0)
+                if changes:
+                    self._log(f"Preprocessing applied {len(changes)} automatic fix(es)")
+                    for change in changes[:5]:  # Show first 5 changes
+                        self._log(f"  - {change}")
+                    if len(changes) > 5:
+                        self._log(f"  ... and {len(changes) - 5} more")
+                if remaining > 0:
+                    self._log(f"Preprocessing: {remaining} issue(s) remain for LLM")
+                else:
+                    self._log("Preprocessing resolved all issues!")
+            
+            # Save checkpoint after preprocessing
+            if self.checkpoint_manager:
+                preprocessed_df = process_result.get("final_df", df)
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.PREPROCESSING,
+                    df=preprocessed_df,
+                    metadata={
+                        "action": "after_preprocessing",
+                        "changes_made": len(preprocessing.get("changes_made", [])),
+                        "issues_remaining": preprocessing.get("issues_remaining", 0)
+                    }
+                )
+                # Refresh data state panel
+                if self.main_app and hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                    self.main_app.data_state_panel._load_latest()
+            
+            # Update visualization for LLM loading phase
+            if self.checkpoint_manager:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.LOADING_LLM,
+                    df=df,
+                    metadata={"action": "llm_loaded"}
+                )
+                if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                    self.main_app.cycle_viz_panel.update_stage(ProcessingStage.LOADING_LLM)
+            
+            # Update status for diagnosis phase
+            self._update_status("Diagnosing...", 0.25)
+            
+            # Save checkpoint before diagnosis
+            if self.checkpoint_manager:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.DIAGNOSING,
+                    df=df,
+                    metadata={"action": "before_diagnosis"}
+                )
+                if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                    self.main_app.cycle_viz_panel.update_stage(ProcessingStage.DIAGNOSING)
+                    # Refresh data state panel
+                    if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                        self.main_app.data_state_panel._load_latest()
             
             # Log diagnosis results
             diag = process_result.get("diagnosis", {})
             self._log(f"Quality score: {diag.get('quality_score', 0):.2f}")
             self._log(f"Issues found: {diag.get('issues_count', 0)}")
             
-            # Log fix attempts
+            # Log fix attempts and save checkpoints
             attempts = process_result.get("fix_attempts", [])
             for attempt in attempts:
-                self._update_status(f"Fix attempt {attempt['attempt']}...", 0.4 + 0.15 * attempt['attempt'])
-                self._log(f"Fix attempt {attempt['attempt']}: {'Success' if attempt['success'] else 'Failed'}")
+                attempt_num = attempt['attempt']
+                self._update_status(f"Fix attempt {attempt_num}...", 0.4 + 0.15 * attempt_num)
+                self._log(f"Fix attempt {attempt_num}: {'Success' if attempt['success'] else 'Failed'}")
                 if attempt.get("error"):
                     self._log(f"  Error: {attempt['error'][:100]}...")
+                
+                # Save checkpoint for each fix attempt
+                if self.checkpoint_manager:
+                    fixed_df = process_result.get("final_df")
+                    if fixed_df is not None:
+                        self.checkpoint_manager.create_checkpoint(
+                            ProcessingStage.FIX_ATTEMPT,
+                            df=fixed_df,
+                            metadata={
+                                "attempt": attempt_num,
+                                "success": attempt.get("success", False),
+                                "error": attempt.get("error")
+                            }
+                        )
+                        if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                            self.main_app.cycle_viz_panel.update_stage(ProcessingStage.FIX_ATTEMPT)
+                            # Refresh data state panel
+                            if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                                self.main_app.data_state_panel._load_latest()
             
             # Get final result
+            final_df = process_result.get("final_df")
             if process_result.get("success"):
                 self._log("Processing successful!")
                 self._update_status("Success", 1.0)
+                
+                # Save completion checkpoint
+                if self.checkpoint_manager and final_df is not None:
+                    self.checkpoint_manager.create_checkpoint(
+                        ProcessingStage.COMPLETE,
+                        df=final_df,
+                        metadata={"success": True}
+                    )
+                    if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                        self.main_app.cycle_viz_panel.update_stage(ProcessingStage.COMPLETE)
+                        # Refresh data state panel
+                        if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                            self.main_app.data_state_panel._load_latest()
+                
                 result = {
                     "success": True,
-                    "final_df": process_result.get("final_df")
+                    "final_df": final_df
                 }
+                # Update main app status bar
+                if self.main_app:
+                    dpg.set_value(self.main_app.status_text, "Processing complete - Success!")
+                    dpg.set_value(self.main_app.progress_bar, 1.0)
+                    dpg.configure_item(self.main_app.progress_bar, overlay="Complete")
             else:
                 self._log("Processing completed with issues remaining")
                 self._update_status("Completed with issues", 1.0)
+                
+                # Save checkpoint even if not fully successful
+                if self.checkpoint_manager and final_df is not None:
+                    self.checkpoint_manager.create_checkpoint(
+                        ProcessingStage.COMPLETE,
+                        df=final_df,
+                        metadata={"success": False}
+                    )
+                    if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                        self.main_app.cycle_viz_panel.update_stage(ProcessingStage.COMPLETE)
+                        # Refresh data state panel
+                        if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                            self.main_app.data_state_panel._load_latest()
+                
                 result = {
                     "success": False,
-                    "final_df": process_result.get("final_df")
+                    "final_df": final_df
                 }
+                # Update main app status bar
+                if self.main_app:
+                    dpg.set_value(self.main_app.status_text, "Processing complete - Issues remain")
+                    dpg.set_value(self.main_app.progress_bar, 1.0)
+                    dpg.configure_item(self.main_app.progress_bar, overlay="Complete")
             
             # Display last script if available
             if attempts:
@@ -369,7 +624,27 @@ class ProcessPanel:
         except Exception as e:
             self._log(f"Processing error: {str(e)}")
             self._update_status("Error", 0.0)
+            
+            # Save error checkpoint
+            from ..utils.checkpoint_manager import ProcessingStage
+            if self.checkpoint_manager and self.current_df is not None:
+                self.checkpoint_manager.create_checkpoint(
+                    ProcessingStage.ERROR,
+                    df=self.current_df,
+                    metadata={"error": str(e)}
+                )
+                if self.main_app and hasattr(self.main_app, 'cycle_viz_panel'):
+                    self.main_app.cycle_viz_panel.update_stage(ProcessingStage.ERROR)
+                    # Refresh data state panel
+                    if hasattr(self.main_app, 'data_state_panel') and self.main_app.data_state_panel:
+                        self.main_app.data_state_panel._load_latest()
+            
             result = {"success": False, "error": str(e)}
+            # Update main app status bar
+            if self.main_app:
+                dpg.set_value(self.main_app.status_text, f"Processing error: {str(e)[:50]}")
+                dpg.set_value(self.main_app.progress_bar, 0.0)
+                dpg.configure_item(self.main_app.progress_bar, overlay="Error")
         
         finally:
             self.is_processing = False

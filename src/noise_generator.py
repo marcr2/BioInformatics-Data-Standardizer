@@ -153,17 +153,43 @@ class NoiseGenerator:
         # Generate random cell positions
         positions = self._generate_positions(df, eligible_columns, cells_to_modify)
         
+        # Track columns that need dtype conversion to object (for string values)
+        columns_to_convert = set()
+        
         # Apply noise to each position
         for row_idx, col_name in positions:
             original_value = df_noisy.at[row_idx, col_name]
             noise_type = random.choice(self.config.noise_types)
+            original_dtype = df_noisy[col_name].dtype
             
             new_value, modification = self._apply_noise(
                 original_value, 
                 col_name, 
                 noise_type,
-                df_noisy[col_name].dtype
+                original_dtype
             )
+            
+            # If we're assigning a string to a numeric column, convert column dtype first
+            if isinstance(new_value, str) and np.issubdtype(original_dtype, np.number):
+                if col_name not in columns_to_convert:
+                    # Convert to object dtype before first string assignment
+                    # #region agent log
+                    import time
+                    import json
+                    log_entry = {
+                        "timestamp": int(time.time() * 1000),
+                        "location": "noise_generator.py:174",
+                        "message": "Converting column to object dtype",
+                        "data": {"column": col_name, "original_dtype": str(original_dtype), "new_value_type": "str"},
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "A"
+                    }
+                    with open(r'c:\Users\marce\Desktop\BIDS\.cursor\debug.log', 'a') as f:
+                        f.write(json.dumps(log_entry) + '\n')
+                    # #endregion
+                    df_noisy[col_name] = df_noisy[col_name].astype('object')
+                    columns_to_convert.add(col_name)
             
             df_noisy.at[row_idx, col_name] = new_value
             modifications.append({

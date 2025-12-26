@@ -22,7 +22,7 @@ class ResultsPanel:
     """
     
     MAX_PREVIEW_ROWS = 100
-    MAX_PREVIEW_COLS = 20
+    MAX_PREVIEW_COLS = 1000  # Allow all columns, horizontal scroll will handle it
     
     def __init__(self):
         """Initialize ResultsPanel."""
@@ -49,8 +49,12 @@ class ResultsPanel:
         dpg.add_separator()
         dpg.add_spacer(height=5)
         
-        # Table container
-        with dpg.child_window(height=-60, border=True) as container:
+        # Table container with horizontal scroll support
+        with dpg.child_window(
+            height=-60,
+            border=True,
+            horizontal_scrollbar=True
+        ) as container:
             self.table_container_tag = container
             dpg.add_text(
                 "Load a file to see data preview",
@@ -123,11 +127,11 @@ class ResultsPanel:
             )
             return
         
-        # Limit columns and rows for display
+        # Limit rows for display, but show all columns with horizontal scroll
         display_df = df.head(self.MAX_PREVIEW_ROWS)
-        columns = list(df.columns)[:self.MAX_PREVIEW_COLS]
+        columns = list(df.columns)  # Show all columns
         
-        # Create table
+        # Create table with horizontal scrolling enabled
         with dpg.table(
             parent=self.table_container_tag,
             header_row=True,
@@ -139,14 +143,15 @@ class ResultsPanel:
             scrollY=True,
             freeze_rows=1,
             resizable=True,
-            policy=dpg.mvTable_SizingStretchProp
+            policy=dpg.mvTable_SizingFixedFit
         ):
-            # Add columns
+            # Add all columns with minimum width
             for col in columns:
-                dpg.add_table_column(label=str(col))
-            
-            if len(df.columns) > self.MAX_PREVIEW_COLS:
-                dpg.add_table_column(label=f"... +{len(df.columns) - self.MAX_PREVIEW_COLS}")
+                dpg.add_table_column(
+                    label=str(col),
+                    width_fixed=True,
+                    init_width_or_weight=120
+                )
             
             # Add rows
             for idx, row in display_df.iterrows():
@@ -164,17 +169,17 @@ class ResultsPanel:
                             if len(text) > 50:
                                 text = text[:47] + "..."
                             dpg.add_text(text)
-                    
-                    if len(df.columns) > self.MAX_PREVIEW_COLS:
-                        dpg.add_text("...")
             
-            # Show if truncated
+            # Show if truncated (add message in first column only)
             if len(df) > self.MAX_PREVIEW_ROWS:
                 with dpg.table_row():
                     dpg.add_text(
-                        f"... {len(df) - self.MAX_PREVIEW_ROWS:,} more rows",
+                        f"... {len(df) - self.MAX_PREVIEW_ROWS:,} more rows (scroll to see all columns)",
                         color=(149, 165, 166)
                     )
+                    # Add empty cells for remaining columns
+                    for _ in range(len(columns) - 1):
+                        dpg.add_text("")
     
     def show_export_dialog(self) -> None:
         """Show the export file dialog."""
@@ -317,11 +322,10 @@ class ResultsPanel:
             width=300,
             height=100,
             pos=[550, 400],
-            no_resize=True,
             on_close=lambda: dpg.delete_item("results_error_popup")
         ) as popup:
             dpg.set_item_alias(popup, "results_error_popup")
-            dpg.add_text(message, wrap=280, color=(231, 76, 60))
+            dpg.add_text(message, wrap=-1, color=(231, 76, 60))
             dpg.add_spacer(height=10)
             dpg.add_button(
                 label="OK",
@@ -337,11 +341,10 @@ class ResultsPanel:
             width=300,
             height=100,
             pos=[550, 400],
-            no_resize=True,
             on_close=lambda: dpg.delete_item("results_success_popup")
         ) as popup:
             dpg.set_item_alias(popup, "results_success_popup")
-            dpg.add_text(message, wrap=280, color=(46, 204, 113))
+            dpg.add_text(message, wrap=-1, color=(46, 204, 113))
             dpg.add_spacer(height=10)
             dpg.add_button(
                 label="OK",

@@ -31,6 +31,28 @@ echo.
 echo Installing dependencies...
 call venv\Scripts\activate.bat
 python -m pip install --upgrade pip
+
+:: Install PyTorch with CUDA support first (if available)
+echo.
+echo Checking for CUDA support...
+python -c "import subprocess; import sys; result = subprocess.run(['nvidia-smi'], capture_output=True); sys.exit(0 if result.returncode == 0 else 1)" 2>nul
+if errorlevel 0 (
+    echo NVIDIA GPU detected! Installing PyTorch with CUDA support...
+    echo Installing PyTorch with CUDA 12.8 (supports Blackwell/RTX 50-series GPUs)...
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    if errorlevel 1 (
+        echo Warning: Failed to install CUDA version, falling back to CPU version...
+        pip install torch torchvision torchaudio
+    )
+) else (
+    echo No NVIDIA GPU detected or nvidia-smi not found.
+    echo Installing CPU-only PyTorch (will be slow for LLM inference)...
+    pip install torch torchvision torchaudio
+)
+
+:: Install remaining dependencies
+echo.
+echo Installing other dependencies...
 pip install -r requirements.txt
 
 if errorlevel 1 (
@@ -41,13 +63,7 @@ if errorlevel 1 (
 )
 echo.
 
-:: Create .env from example
-if not exist .env (
-    copy .env.example .env
-    echo Created .env file - please add your API keys!
-) else (
-    echo .env file already exists.
-)
+:: Note: No .env file needed - system is 100% local!
 
 :: Create schemas directory
 if not exist schemas mkdir schemas
@@ -62,7 +78,11 @@ echo ========================================
 echo  Installation complete!
 echo.
 echo  Next steps:
-echo  1. Edit .env file and add your API keys
-echo  2. Run: run.bat
+echo  1. Run: run.bat
+echo  2. On first launch, the system will download
+echo     a local LLM model (~8-16GB, one-time download)
+echo  3. No API keys needed - everything runs locally!
+echo.
+echo  Note: GPU with 8GB+ VRAM recommended for best performance
 echo ========================================
 pause

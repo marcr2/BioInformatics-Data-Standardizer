@@ -8,11 +8,16 @@ SmartIngestor: Three-layer file ingestion system
 """
 
 import io
+import warnings
+import unicodedata
 import pandas as pd
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, Tuple
 from dataclasses import dataclass
 from enum import Enum
+
+# Suppress SyntaxWarning from python-magic-bin package
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="magic")
 import magic
 
 from .utils.file_handlers import (
@@ -21,7 +26,7 @@ from .utils.file_handlers import (
     read_file_header,
     get_file_info
 )
-from .utils.llm_client import GeminiClient, get_gemini_client
+from .utils.llm_client import LocalLLMClient, get_gemini_client
 
 
 class IngestionStatus(Enum):
@@ -46,25 +51,38 @@ class FormatScout:
     """
     LLM-powered format detection and parsing for unknown file types.
     
-    Uses Gemini to:
+    Uses local LLM to:
     1. Identify unknown file formats
     2. Generate Python parsing code
     3. Execute parsing to extract DataFrames
     """
     
-    def __init__(self, llm_client: Optional[GeminiClient] = None):
+    def __init__(self, llm_client: Optional[LocalLLMClient] = None):
         """
         Initialize FormatScout.
         
         Args:
-            llm_client: Gemini client (creates one if not provided)
+            llm_client: Local LLM client (creates one lazily if not provided)
         """
-        self.llm = llm_client or get_gemini_client()
+        # Store client directly if provided, otherwise None for lazy loading
+        self._llm_client = llm_client
         self._sandbox_globals = {
             'pd': pd,
             'io': io,
             'Path': Path,
         }
+    
+    @property
+    def llm(self) -> LocalLLMClient:
+        """Lazy-load LLM client only when accessed."""
+        if self._llm_client is None:
+            self._llm_client = get_gemini_client()
+        return self._llm_client
+    
+    @llm.setter
+    def llm(self, value: Optional[LocalLLMClient]) -> None:
+        """Set LLM client directly."""
+        self._llm_client = value
     
     def identify_format(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -210,10 +228,10 @@ class SmartIngestor:
     Layer 3: FormatScout LLM fallback for unknown formats
     """
     
-    # Standard tabular file readers
+    # Standard tabular file readers with encoding handling
     TABULAR_READERS = {
-        '.csv': lambda p: pd.read_csv(p),
-        '.tsv': lambda p: pd.read_csv(p, sep='\t'),
+        '.csv': lambda p: SmartIngestor._read_csv_with_encoding(p),
+        '.tsv': lambda p: SmartIngestor._read_csv_with_encoding(p, sep='\t'),
         '.xlsx': lambda p: pd.read_excel(p, engine='openpyxl'),
         '.xls': lambda p: pd.read_excel(p),
         '.parquet': lambda p: pd.read_parquet(p),
@@ -222,8 +240,8 @@ class SmartIngestor:
     
     # MIME type to reader mapping
     MIME_READERS = {
-        'text/csv': lambda p: pd.read_csv(p),
-        'text/tab-separated-values': lambda p: pd.read_csv(p, sep='\t'),
+        'text/csv': lambda p: SmartIngestor._read_csv_with_encoding(p),
+        'text/tab-separated-values': lambda p: SmartIngestor._read_csv_with_encoding(p, sep='\t'),
         'application/vnd.ms-excel': lambda p: pd.read_excel(p),
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 
             lambda p: pd.read_excel(p, engine='openpyxl'),
@@ -232,14 +250,14 @@ class SmartIngestor:
     def __init__(
         self, 
         use_llm_fallback: bool = True,
-        gemini_client: Optional[GeminiClient] = None
+        gemini_client: Optional[LocalLLMClient] = None
     ):
         """
         Initialize SmartIngestor.
         
         Args:
             use_llm_fallback: Whether to use LLM for unknown formats
-            gemini_client: Optional pre-configured Gemini client
+            gemini_client: Optional pre-configured local LLM client
         """
         self.use_llm_fallback = use_llm_fallback
         self.extractor = ArchiveExtractor()
@@ -385,28 +403,129 @@ class SmartIngestor:
         
         for delim in delimiters:
             try:
-                df = pd.read_csv(
-                    file_path, 
-                    sep=delim, 
-                    encoding='utf-8',
-                    on_bad_lines='skip'
-                )
+                df = SmartIngestor._read_csv_with_encoding(file_path, sep=delim)
                 # Check if it looks like valid tabular data
                 if len(df.columns) > 1 and len(df) > 0:
                     return df
             except Exception:
                 continue
         
-        # Try with different encodings
-        for encoding in ['latin-1', 'cp1252', 'iso-8859-1']:
+        return None
+    
+    @staticmethod
+    def _read_csv_with_encoding(file_path: Path, sep=',', **kwargs) -> pd.DataFrame:
+        """
+        Read CSV file with encoding detection and non-ASCII character replacement.
+        
+        Args:
+            file_path: Path to CSV file
+            sep: Separator character
+            **kwargs: Additional arguments for pd.read_csv
+            
+        Returns:
+            DataFrame with non-ASCII characters replaced
+        """
+        # Try different encodings
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
+        df = None
+        used_encoding = None
+        
+        for encoding in encodings:
             try:
-                df = pd.read_csv(file_path, encoding=encoding, on_bad_lines='skip')
-                if len(df.columns) > 1 and len(df) > 0:
-                    return df
+                df = pd.read_csv(
+                    file_path,
+                    sep=sep,
+                    encoding=encoding,
+                    on_bad_lines='skip',
+                    **kwargs
+                )
+                used_encoding = encoding
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                continue
             except Exception:
+                # Other errors, try next encoding
                 continue
         
-        return None
+        if df is None:
+            # Last resort: read with errors='replace' to handle any encoding issues
+            try:
+                # Read file with error handling
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                    df = pd.read_csv(
+                        f,
+                        sep=sep,
+                        on_bad_lines='skip',
+                        **kwargs
+                    )
+            except Exception:
+                # Final fallback: use latin-1 which can read any byte
+                try:
+                    df = pd.read_csv(
+                        file_path,
+                        sep=sep,
+                        encoding='latin-1',
+                        on_bad_lines='skip',
+                        **kwargs
+                    )
+                except Exception:
+                    # Absolute last resort
+                    with open(file_path, 'r', encoding='latin-1', errors='replace') as f:
+                        df = pd.read_csv(
+                            f,
+                            sep=sep,
+                            on_bad_lines='skip',
+                            **kwargs
+                        )
+        
+        # Replace non-ASCII characters in string columns
+        df = SmartIngestor._replace_non_ascii(df)
+        
+        return df
+    
+    @staticmethod
+    def _replace_non_ascii(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Replace non-ASCII characters with ASCII equivalents in string columns.
+        
+        Args:
+            df: Input DataFrame
+            
+        Returns:
+            DataFrame with non-ASCII characters replaced
+        """
+        result = df.copy()
+        
+        for col in result.select_dtypes(include=['object']).columns:
+            # Store original NaN mask before conversion
+            nan_mask = result[col].isna()
+            
+            # Convert to string, handling NaN values
+            col_str = result[col].astype(str)
+            
+            # Replace non-ASCII characters
+            def replace_char(s):
+                # Skip if it was originally NaN (now 'nan' string)
+                if s == 'nan':
+                    return s
+                try:
+                    # Normalize to NFKD (decomposed form) and remove non-ASCII
+                    normalized = unicodedata.normalize('NFKD', str(s))
+                    # Keep only ASCII characters
+                    ascii_only = normalized.encode('ascii', 'ignore').decode('ascii')
+                    return ascii_only
+                except Exception:
+                    # If replacement fails, return original
+                    return s
+            
+            col_str = col_str.apply(replace_char)
+            
+            # Restore original NaN values
+            col_str[nan_mask] = pd.NA
+            
+            result[col] = col_str
+        
+        return result
     
     def ingest_multiple(
         self, 

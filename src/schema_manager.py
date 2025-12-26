@@ -580,6 +580,226 @@ class SchemaManager:
                 return series
         except Exception:
             return series
+    
+    def attempt_auto_fix(
+        self,
+        df: pd.DataFrame,
+        schema: Schema,
+        column_mapping: Optional[Dict[str, str]] = None
+    ) -> tuple[pd.DataFrame, List[str], List[str]]:
+        """
+        Attempt automatic fixes for common schema violations.
+        
+        This is used by the rules-based preprocessor to fix simple issues
+        without needing the LLM.
+        
+        Args:
+            df: DataFrame to fix
+            schema: Target schema
+            column_mapping: Optional column mapping
+            
+        Returns:
+            Tuple of (fixed_df, changes_made, remaining_issues)
+        """
+        if column_mapping is None:
+            validation = self.validate_dataframe(df, schema)
+            column_mapping = validation.column_mapping
+        
+        result = df.copy()
+        changes = []
+        remaining = []
+        
+        for col_def in schema.columns:
+            if col_def.name not in column_mapping:
+                if col_def.required:
+                    remaining.append(f"Required column '{col_def.name}' not found")
+                continue
+            
+            source_col = column_mapping[col_def.name]
+            if source_col not in result.columns:
+                continue
+            
+            # Try to fix type violations
+            fix_result = self._fix_type_violations(result[source_col], col_def)
+            if fix_result["changed"]:
+                result[source_col] = fix_result["series"]
+                changes.append(f"Fixed type for '{source_col}': {fix_result['description']}")
+            if fix_result["remaining"]:
+                remaining.append(fix_result["remaining"])
+            
+            # Try to fix pattern violations
+            fix_result = self._fix_pattern_violations(result[source_col], col_def)
+            if fix_result["changed"]:
+                result[source_col] = fix_result["series"]
+                changes.append(f"Fixed pattern for '{source_col}': {fix_result['description']}")
+            if fix_result["remaining"]:
+                remaining.append(fix_result["remaining"])
+            
+            # Try to fix range violations
+            fix_result = self._fix_range_violations(result[source_col], col_def)
+            if fix_result["changed"]:
+                result[source_col] = fix_result["series"]
+                changes.append(f"Fixed range for '{source_col}': {fix_result['description']}")
+            if fix_result["remaining"]:
+                remaining.append(fix_result["remaining"])
+            
+            # Handle null values
+            fix_result = self._fix_null_values(result[source_col], col_def)
+            if fix_result["changed"]:
+                result[source_col] = fix_result["series"]
+                changes.append(f"Fixed nulls for '{source_col}': {fix_result['description']}")
+            if fix_result["remaining"]:
+                remaining.append(fix_result["remaining"])
+        
+        return result, changes, remaining
+    
+    def _fix_type_violations(
+        self,
+        series: pd.Series,
+        col_def: ColumnDefinition
+    ) -> Dict[str, Any]:
+        """Attempt to fix type violations."""
+        result = {"changed": False, "series": series, "description": "", "remaining": None}
+        
+        try:
+            if col_def.type == ColumnType.FLOAT:
+                # Try to convert to numeric
+                original = series.copy()
+                converted = pd.to_numeric(series, errors='coerce')
+                coerced_count = original.notna().sum() - converted.notna().sum()
+                if coerced_count > 0:
+                    result["series"] = converted
+                    result["changed"] = True
+                    result["description"] = f"Coerced {coerced_count} values to numeric"
+                    if coerced_count > len(series) * 0.1:
+                        result["remaining"] = f"'{series.name}' has {coerced_count} non-numeric values"
+                        
+            elif col_def.type == ColumnType.INT:
+                original = series.copy()
+                converted = pd.to_numeric(series, errors='coerce').round().astype('Int64')
+                result["series"] = converted
+                result["changed"] = True
+                result["description"] = "Converted to integer"
+                
+            elif col_def.type == ColumnType.BOOL:
+                bool_map = {
+                    'true': True, 'false': False,
+                    'yes': True, 'no': False,
+                    '1': True, '0': False,
+                    't': True, 'f': False,
+                }
+                converted = series.astype(str).str.lower().map(bool_map)
+                if converted.notna().any():
+                    result["series"] = converted
+                    result["changed"] = True
+                    result["description"] = "Converted to boolean"
+                    
+        except Exception:
+            pass
+        
+        return result
+    
+    def _fix_pattern_violations(
+        self,
+        series: pd.Series,
+        col_def: ColumnDefinition
+    ) -> Dict[str, Any]:
+        """Attempt to fix pattern violations."""
+        result = {"changed": False, "series": series, "description": "", "remaining": None}
+        
+        if not col_def.validation_regex or col_def.type != ColumnType.STRING:
+            return result
+        
+        pattern = re.compile(col_def.validation_regex)
+        
+        try:
+            original = series.copy()
+            fixed = series.astype(str).str.strip()
+            
+            # For gene symbols: remove invalid leading/trailing characters
+            if 'gene' in col_def.name.lower() or 'symbol' in col_def.name.lower():
+                fixed = fixed.str.replace(r'^[^A-Za-z]+', '', regex=True)
+                fixed = fixed.str.replace(r'[^A-Za-z0-9\-]+$', '', regex=True)
+            
+            # Count fixes
+            non_null = fixed.dropna()
+            invalid_after = sum(1 for v in non_null if not pattern.match(str(v)))
+            original_invalid = sum(1 for v in original.dropna() if not pattern.match(str(v)))
+            
+            if invalid_after < original_invalid:
+                result["series"] = fixed
+                result["changed"] = True
+                result["description"] = f"Fixed {original_invalid - invalid_after} pattern violations"
+            
+            if invalid_after > 0:
+                result["remaining"] = f"'{col_def.name}' still has {invalid_after} pattern violations"
+                
+        except Exception:
+            pass
+        
+        return result
+    
+    def _fix_range_violations(
+        self,
+        series: pd.Series,
+        col_def: ColumnDefinition
+    ) -> Dict[str, Any]:
+        """Attempt to fix range violations by clamping."""
+        result = {"changed": False, "series": series, "description": "", "remaining": None}
+        
+        if col_def.min_value is None and col_def.max_value is None:
+            return result
+        
+        if col_def.type not in (ColumnType.FLOAT, ColumnType.INT):
+            return result
+        
+        try:
+            numeric = pd.to_numeric(series, errors='coerce')
+            clamp_count = 0
+            
+            if col_def.min_value is not None:
+                below = (numeric < col_def.min_value).sum()
+                if below > 0:
+                    numeric = numeric.clip(lower=col_def.min_value)
+                    clamp_count += below
+            
+            if col_def.max_value is not None:
+                above = (numeric > col_def.max_value).sum()
+                if above > 0:
+                    numeric = numeric.clip(upper=col_def.max_value)
+                    clamp_count += above
+            
+            if clamp_count > 0:
+                result["series"] = numeric
+                result["changed"] = True
+                result["description"] = f"Clamped {clamp_count} values to [{col_def.min_value}, {col_def.max_value}]"
+                
+        except Exception:
+            pass
+        
+        return result
+    
+    def _fix_null_values(
+        self,
+        series: pd.Series,
+        col_def: ColumnDefinition
+    ) -> Dict[str, Any]:
+        """Attempt to fix null values."""
+        result = {"changed": False, "series": series, "description": "", "remaining": None}
+        
+        null_count = series.isnull().sum()
+        if null_count == 0:
+            return result
+        
+        # If there's a default value, fill nulls
+        if col_def.default_value is not None:
+            result["series"] = series.fillna(col_def.default_value)
+            result["changed"] = True
+            result["description"] = f"Filled {null_count} nulls with default: {col_def.default_value}"
+        elif col_def.required:
+            result["remaining"] = f"'{col_def.name}' has {null_count} null values (required)"
+        
+        return result
 
 
 def get_schema_manager(schemas_dir: Optional[str] = None) -> SchemaManager:

@@ -13,10 +13,14 @@ import tempfile
 import tarfile
 import zipfile
 import gzip
+import warnings
 from pathlib import Path
 from typing import List, Optional, Tuple, Generator
 from dataclasses import dataclass
 from enum import Enum
+
+# Suppress SyntaxWarning from python-magic-bin package
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="magic")
 import magic
 
 
