@@ -1,0 +1,56 @@
+{
+  "name": "IPA Standard",
+  "version": "1.0",
+  "description": "Standard Ingenuity Pathway Analysis format",
+  "builtin": false,
+  "columns": [
+    {
+      "name": "Position",
+      "type": "string",
+      "source": "auto",
+      "required": true,
+      "description": "",
+      "transform": "none",
+      "default_value": null,
+      "validation_regex": null,
+      "min_value": null,
+      "max_value": null
+    },
+    {
+      "name": "Gene",
+      "type": "string",
+      "source": "auto",
+      "required": true,
+      "description": "",
+      "transform": "none",
+      "default_value": null,
+      "validation_regex": null,
+      "min_value": null,
+      "max_value": null
+    },
+    {
+      "name": "Adjusted P-value",
+      "type": "float",
+      "source": "auto",
+      "required": true,
+      "description": "",
+      "transform": "none",
+      "default_value": null,
+      "validation_regex": null,
+      "min_value": null,
+      "max_value": null
+    },
+    {
+      "name": "deltaBeta",
+      "type": "float",
+      "source": "auto",
+      "required": true,
+      "description": "",
+      "transform": "none",
+      "default_value": null,
+      "validation_regex": null,
+      "min_value": null,
+      "max_value": null
+    }
+  ]
+}

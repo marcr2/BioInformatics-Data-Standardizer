@@ -1,0 +1,27 @@
+# BIDS - Bioinformatics Data Standardizer
+# Requirements
+
+# Core
+python-magic-bin>=0.4.14
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Archive handling
+py7zr>=0.20.0
+rarfile>=4.1
+openpyxl>=3.1.0
+pyarrow>=14.0.0
+
+# ML/Vectorization
+scikit-learn>=1.3.0
+chromadb>=0.4.0
+
+# LLM APIs
+google-generativeai>=0.3.0
+anthropic>=0.18.0
+
+# GUI
+dearpygui>=1.10.0
+
+# Utilities
+python-dotenv>=1.0.0
