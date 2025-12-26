@@ -26,6 +26,7 @@ A powerful system for cleaning and standardizing messy clinical/bioinformatics d
    GOOGLE_API_KEY=your_gemini_key
    ANTHROPIC_API_KEY=your_anthropic_key
    ```
+   *you can also edit this in the software settings*
 4. **Launch** with `run.bat`
 
 ## Project Structure
@@ -57,13 +58,6 @@ BIDS/
 4. **Diagnose**: Run AI diagnostics to identify data issues
 5. **Fix & Export**: Generate and apply fixes, export cleaned data
 
-## Output Schemas
-
-### IPA Standard
-- `GeneSymbol` (string): Gene identifier
-- `FoldChange` (float): Expression fold change
-- `PValue` (float): Statistical significance
-
 ### Custom Schemas
 Create your own via the Schema Editor with:
 - Custom column names and types
@@ -72,4 +66,4 @@ Create your own via the Schema Editor with:
 
 ## License
 
-MIT License - See LICENSE file
+GPL-3.0 License - See LICENSE file
