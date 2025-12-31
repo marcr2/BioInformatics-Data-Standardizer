@@ -44,16 +44,25 @@ class BIDSApp:
         "text_dim": (149, 165, 166),
     }
     
-    def __init__(self, width: int = 1400, height: int = 900):
+    def __init__(self, width: int = None, height: int = None):
         """
         Initialize the BIDS application.
         
         Args:
-            width: Window width
-            height: Window height
+            width: Window width (if None, loads from preferences)
+            height: Window height (if None, loads from preferences)
         """
-        self.width = width
-        self.height = height
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        
+        # Load resolution from preferences if not provided
+        if width is None or height is None:
+            pref_width, pref_height = prefs.get_window_size()
+            self.width = width if width is not None else pref_width
+            self.height = height if height is not None else pref_height
+        else:
+            self.width = width
+            self.height = height
         
         # State
         self.current_df = None
@@ -77,6 +86,28 @@ class BIDSApp:
         from ..utils.checkpoint_manager import CheckpointManager
         self.checkpoint_manager = CheckpointManager()
         
+        # Base resolution for scaling calculations (reference resolution)
+        self.base_width = 1400
+        self.base_height = 900
+        
+        # Calculate scaling factors
+        self.scale_x = self.width / self.base_width
+        self.scale_y = self.height / self.base_height
+        # Use average scale for consistent proportions
+        self.scale = (self.scale_x + self.scale_y) / 2.0
+    
+    def scale_size(self, size: int) -> int:
+        """Scale a size value based on window resolution."""
+        return int(size * self.scale)
+    
+    def scale_width(self, width: int) -> int:
+        """Scale a width value based on window resolution."""
+        return int(width * self.scale_x)
+    
+    def scale_height(self, height: int) -> int:
+        """Scale a height value based on window resolution."""
+        return int(height * self.scale_y)
+    
     def setup(self) -> None:
         """Set up Dear PyGui context and windows."""
         dpg.create_context()
@@ -89,13 +120,20 @@ class BIDSApp:
         cache_dir = Path("cache")
         cache_dir.mkdir(exist_ok=True)
         
-        # Configure viewport
+        # Enable DPI awareness for crisp rendering on high-DPI displays
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except Exception:
+            pass  # DPI awareness not available on this system
+        
+        # Configure viewport with resolution from preferences
         dpg.create_viewport(
             title="BIDS - Bioinformatics Data Standardizer",
             width=self.width,
             height=self.height,
-            min_width=1000,
-            min_height=700
+            min_width=self.scale_width(1000),
+            min_height=self.scale_height(700)
         )
         
         # Apply theme
@@ -179,26 +217,55 @@ class BIDSApp:
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, self.COLORS["error"])
     
     def _setup_fonts(self) -> None:
-        """Set up fonts."""
-        # Try to use a Windows system font for better appearance
+        """Set up fonts with cross-platform support."""
         import os
-        
-        # Common Windows font paths
-        windows_fonts = [
-            os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts', 'segoeui.ttf'),
-            os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts', 'arial.ttf'),
-            os.path.join(os.environ.get('WINDIR', 'C:\\Windows'), 'Fonts', 'tahoma.ttf'),
-        ]
+        import platform
+        from pathlib import Path
         
         font_path = None
-        for path in windows_fonts:
-            if os.path.exists(path):
-                font_path = path
-                break
+        system = platform.system()
+        
+        if system == "Windows":
+            # Windows font paths
+            windir = os.environ.get('WINDIR', 'C:\\Windows')
+            windows_fonts = [
+                Path(windir) / 'Fonts' / 'segoeui.ttf',
+                Path(windir) / 'Fonts' / 'arial.ttf',
+                Path(windir) / 'Fonts' / 'tahoma.ttf',
+            ]
+            
+            for path in windows_fonts:
+                if path.exists():
+                    font_path = str(path)
+                    break
+        elif system == "Linux":
+            # Linux font paths (common locations)
+            linux_fonts = [
+                Path.home() / '.fonts' / 'DejaVuSans.ttf',
+                Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+                Path('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'),
+                Path('/usr/share/fonts/TTF/DejaVuSans.ttf'),
+                Path('/usr/local/share/fonts/DejaVuSans.ttf'),
+                Path('/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf'),
+            ]
+            
+            for path in linux_fonts:
+                if path.exists():
+                    font_path = str(path)
+                    break
+        # macOS could be added here if needed
+        # elif system == "Darwin":
+        #     mac_fonts = [
+        #         Path('/System/Library/Fonts/Helvetica.ttc'),
+        #         Path('/Library/Fonts/Arial.ttf'),
+        #     ]
+        #     ...
         
         if font_path:
             with dpg.font_registry():
-                self.default_font = dpg.add_font(font_path, 16)
+                # Scale font size based on resolution
+                font_size = max(12, int(16 * self.scale))
+                self.default_font = dpg.add_font(font_path, font_size)
             dpg.bind_font(self.default_font)
         # If no font found, Dear PyGui will use its built-in default
     
@@ -218,23 +285,25 @@ class BIDSApp:
             # Header
             self._create_header()
             
-            dpg.add_spacer(height=10)
+            dpg.add_spacer(height=self.scale_size(10))
             
             # Main content area with panels
             with dpg.group(horizontal=True):
-                # Left panel - File selection (25% width)
-                with dpg.child_window(width=320, height=-60, border=True):
+                # Left panel - File selection (scaled width)
+                left_panel_width = self.scale_width(320)
+                with dpg.child_window(width=left_panel_width, height=-self.scale_height(60), border=True):
                     self.file_panel = FilePanel(
-                        on_file_loaded=self._on_file_loaded
+                        on_file_loaded=self._on_file_loaded,
+                        scale=self.scale
                     )
                     self.file_panel.create()
                 
-                dpg.add_spacer(width=10)
+                dpg.add_spacer(width=self.scale_width(10))
                 
                 # Center area
                 with dpg.group():
                     # Preview/Process tabs (75% width)
-                    with dpg.child_window(width=-1, height=-60, border=True):
+                    with dpg.child_window(width=-1, height=-self.scale_height(60), border=True):
                         with dpg.tab_bar():
                             # Preview tab
                             with dpg.tab(label="Data Preview"):
@@ -252,7 +321,8 @@ class BIDSApp:
                             with dpg.tab(label="Processing"):
                                 self.process_panel = ProcessPanel(
                                     on_process_complete=self._on_process_complete,
-                                    main_app=self
+                                    main_app=self,
+                                    scale=self.scale
                                 )
                                 # Set checkpoint manager
                                 self.process_panel.checkpoint_manager = self.checkpoint_manager
@@ -261,13 +331,14 @@ class BIDSApp:
                             # Embedding Map tab - Interactive visualization
                             with dpg.tab(label="Embedding Map"):
                                 self.embedding_map_panel = EmbeddingMapPanel(
-                                    get_current_data_callback=lambda: self.current_df
+                                    get_current_data_callback=lambda: self.current_df,
+                                    scale=self.scale
                                 )
                                 self.embedding_map_panel.create()
                             
                             # Agent Monitor tab - Real-time LLM activity
                             with dpg.tab(label="Agent Monitor"):
-                                self.agent_monitor_panel = AgentMonitorPanel()
+                                self.agent_monitor_panel = AgentMonitorPanel(scale=self.scale)
                                 self.agent_monitor_panel.create()
                                 # Register as global monitor for callbacks
                                 set_agent_monitor(self.agent_monitor_panel)
@@ -286,7 +357,7 @@ class BIDSApp:
                                 )
                                 self.data_state_panel.create()
             
-            dpg.add_spacer(height=10)
+            dpg.add_spacer(height=self.scale_size(10))
             
             # Bottom status bar
             self._create_status_bar()
@@ -379,11 +450,11 @@ class BIDSApp:
             
             self.progress_bar = dpg.add_progress_bar(
                 default_value=0.0,
-                width=200,
+                width=self.scale_width(200),
                 overlay="Idle"
             )
             
-            dpg.add_spacer(width=10)
+            dpg.add_spacer(width=self.scale_width(10))
             
             self.schema_label = dpg.add_text(
                 "Schema: None",
@@ -545,12 +616,14 @@ class BIDSApp:
     
     def _show_about_dialog(self) -> None:
         """Show the about dialog."""
+        dialog_width = self.scale_width(400)
+        dialog_height = self.scale_height(250)
         with dpg.window(
             label="About BIDS",
             modal=True,
-            width=400,
-            height=250,
-            pos=[500, 300],
+            width=dialog_width,
+            height=dialog_height,
+            pos=[int(self.width * 0.3), int(self.height * 0.3)],
             on_close=lambda: dpg.delete_item("about_dialog")
         ) as dialog:
             dpg.set_item_alias(dialog, "about_dialog")
@@ -577,12 +650,14 @@ class BIDSApp:
         prefs = get_preferences()
         gpu_info = prefs.get_gpu_info()
         
+        dialog_width = self.scale_width(600)
+        dialog_height = self.scale_height(650)
         with dpg.window(
             label="Preferences",
             modal=True,
-            width=600,
-            height=500,
-            pos=[400, 150],
+            width=dialog_width,
+            height=dialog_height,
+            pos=[int(self.width * 0.2), int(self.height * 0.1)],
             on_close=lambda: dpg.delete_item("preferences_dialog")
         ) as dialog:
             dpg.set_item_alias(dialog, "preferences_dialog")
@@ -643,6 +718,124 @@ class BIDSApp:
             dpg.add_text("Theme: Dark (default)", color=(149, 165, 166))
             dpg.add_spacer(height=10)
             
+            # Window Resolution Settings
+            dpg.add_text("Window Resolution", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            # Get current resolution preset
+            current_preset = prefs.get("resolution_preset", "auto")
+            presets = prefs.get_resolution_presets()
+            
+            # Create list of preset labels for dropdown
+            preset_items = [presets[key]["label"] for key in presets.keys()]
+            current_preset_index = list(presets.keys()).index(current_preset) if current_preset in presets else 0
+            
+            # Resolution preset dropdown
+            with dpg.group(horizontal=True):
+                dpg.add_text("Resolution Preset:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=10)
+                resolution_combo = dpg.add_combo(
+                    items=preset_items,
+                    default_value=presets[current_preset]["label"],
+                    width=self.scale_width(250),
+                    callback=self._on_resolution_preset_changed
+                )
+            
+            dpg.add_spacer(height=5)
+            
+            # Custom resolution inputs (only shown if custom is selected)
+            current_width = prefs.get("window_width")
+            current_height = prefs.get("window_height")
+            if current_preset == "custom" and current_width and current_height:
+                custom_width = current_width
+                custom_height = current_height
+            else:
+                # Use current window size or default
+                custom_width = self.width if hasattr(self, 'width') else 1400
+                custom_height = self.height if hasattr(self, 'height') else 900
+            
+            with dpg.group(horizontal=True, show=current_preset == "custom") as custom_res_group:
+                dpg.add_text("Custom Width:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=10)
+                custom_width_input = dpg.add_input_int(
+                    default_value=custom_width,
+                    min_value=800,
+                    max_value=7680,
+                    width=self.scale_width(120),
+                    callback=self._on_custom_width_changed
+                )
+            
+            with dpg.group(horizontal=True, show=current_preset == "custom") as custom_res_group2:
+                dpg.add_text("Custom Height:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=self.scale_width(10))
+                custom_height_input = dpg.add_input_int(
+                    default_value=custom_height,
+                    min_value=600,
+                    max_value=4320,
+                    width=self.scale_width(120),
+                    callback=self._on_custom_height_changed
+                )
+            
+            # Store references for showing/hiding
+            self._custom_width_input = custom_width_input
+            self._custom_height_input = custom_height_input
+            self._custom_width_group = custom_res_group
+            self._custom_height_group = custom_res_group2
+            self._resolution_combo = resolution_combo
+            
+            dpg.add_text(
+                "Note: Resolution changes take effect after restarting the application.",
+                color=self.COLORS["text_dim"],
+                wrap=-1
+            )
+            dpg.add_spacer(height=10)
+            
+            # Map Canvas Settings
+            dpg.add_text("Embedding Map Canvas", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            map_width = prefs.get("map_canvas_width", 800)
+            map_height = prefs.get("map_canvas_height", 500)
+            map_auto_fit = prefs.get("map_auto_fit", True)
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("Canvas Width:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=10)
+                map_width_input = dpg.add_input_int(
+                    default_value=map_width,
+                    min_value=400,
+                    max_value=2000,
+                    width=self.scale_width(100),
+                    callback=lambda s, a: prefs.set("map_canvas_width", a)
+                )
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("Canvas Height:", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=self.scale_width(10))
+                map_height_input = dpg.add_input_int(
+                    default_value=map_height,
+                    min_value=300,
+                    max_value=1500,
+                    width=self.scale_width(100),
+                    callback=lambda s, a: prefs.set("map_canvas_height", a)
+                )
+            
+            dpg.add_spacer(height=5)
+            
+            auto_fit_checkbox = dpg.add_checkbox(
+                label="Auto-fit to screen on startup",
+                default_value=map_auto_fit,
+                callback=lambda s, a: prefs.set("map_auto_fit", a)
+            )
+            
+            dpg.add_text(
+                "Note: Changes take effect after restarting the application.",
+                color=self.COLORS["text_dim"],
+                wrap=-1
+            )
+            
+            dpg.add_spacer(height=10)
+            
             # Processing settings
             dpg.add_text("Processing Settings", color=self.COLORS["text_dim"])
             dpg.add_spacer(height=5)
@@ -656,7 +849,7 @@ class BIDSApp:
                     default_value=max_attempts,
                     min_value=1,
                     max_value=10,
-                    width=80,
+                    width=self.scale_width(80),
                     callback=self._on_max_attempts_changed
                 )
             
@@ -695,7 +888,7 @@ class BIDSApp:
             dpg.add_button(
                 label="Clear Cache",
                 callback=self._on_clear_cache,
-                width=150
+                width=self.scale_width(150)
             )
             dpg.bind_item_theme(dpg.last_item(), self.error_theme)
     
@@ -771,6 +964,59 @@ class BIDSApp:
         except Exception as e:
             dpg.set_value(self.status_text, f"Error clearing cache: {str(e)[:50]}")
     
+    def _on_resolution_preset_changed(self, sender, app_data) -> None:
+        """Handle resolution preset dropdown change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        presets = prefs.get_resolution_presets()
+        
+        # Find the preset key from the label
+        selected_preset = None
+        for key, preset_data in presets.items():
+            if preset_data["label"] == app_data:
+                selected_preset = key
+                break
+        
+        if selected_preset:
+            prefs.set("resolution_preset", selected_preset)
+            
+            # If not custom, set the width/height from preset
+            if selected_preset != "custom":
+                preset_data = presets[selected_preset]
+                prefs.set("window_width", preset_data["width"])
+                prefs.set("window_height", preset_data["height"])
+            
+            # Show/hide custom inputs
+            show_custom = selected_preset == "custom"
+            if hasattr(self, '_custom_width_group'):
+                dpg.configure_item(self._custom_width_group, show=show_custom)
+            if hasattr(self, '_custom_height_group'):
+                dpg.configure_item(self._custom_height_group, show=show_custom)
+            
+            dpg.set_value(self.status_text, f"Resolution preset changed to {app_data} (restart required)")
+    
+    def _on_custom_width_changed(self, sender, app_data) -> None:
+        """Handle custom width input change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        
+        # Ensure value is within valid range
+        value = max(800, min(7680, app_data))
+        prefs.set("window_width", value)
+        prefs.set("resolution_preset", "custom")
+        dpg.set_value(self.status_text, f"Custom width set to {value} (restart required)")
+    
+    def _on_custom_height_changed(self, sender, app_data) -> None:
+        """Handle custom height input change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        
+        # Ensure value is within valid range
+        value = max(600, min(4320, app_data))
+        prefs.set("window_height", value)
+        prefs.set("resolution_preset", "custom")
+        dpg.set_value(self.status_text, f"Custom height set to {value} (restart required)")
+    
     def run(self) -> None:
         """Run the application main loop."""
         self.setup()
@@ -786,6 +1032,7 @@ class BIDSApp:
             # Process agent monitor updates
             if self.agent_monitor_panel:
                 self.agent_monitor_panel.process_updates()
+            
             
             dpg.render_dearpygui_frame()
         

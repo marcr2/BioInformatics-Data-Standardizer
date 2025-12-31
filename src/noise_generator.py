@@ -173,21 +173,6 @@ class NoiseGenerator:
             if isinstance(new_value, str) and np.issubdtype(original_dtype, np.number):
                 if col_name not in columns_to_convert:
                     # Convert to object dtype before first string assignment
-                    # #region agent log
-                    import time
-                    import json
-                    log_entry = {
-                        "timestamp": int(time.time() * 1000),
-                        "location": "noise_generator.py:174",
-                        "message": "Converting column to object dtype",
-                        "data": {"column": col_name, "original_dtype": str(original_dtype), "new_value_type": "str"},
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "A"
-                    }
-                    with open(r'c:\Users\marce\Desktop\BIDS\.cursor\debug.log', 'a') as f:
-                        f.write(json.dumps(log_entry) + '\n')
-                    # #endregion
                     df_noisy[col_name] = df_noisy[col_name].astype('object')
                     columns_to_convert.add(col_name)
             

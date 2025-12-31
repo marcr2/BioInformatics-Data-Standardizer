@@ -43,16 +43,18 @@ class ProcessPanel:
     - Display generated fix scripts
     """
     
-    def __init__(self, on_process_complete: Optional[Callable] = None, main_app=None):
+    def __init__(self, on_process_complete: Optional[Callable] = None, main_app=None, scale: float = 1.0):
         """
         Initialize ProcessPanel.
         
         Args:
             on_process_complete: Callback when processing completes
             main_app: Reference to main app for button callbacks
+            scale: Scaling factor for UI elements
         """
         self.on_process_complete = on_process_complete
         self.main_app = main_app  # Reference to main app
+        self.scale = scale
         self.orchestrator = None
         self.is_processing = False
         self.logs: List[str] = []
@@ -70,6 +72,10 @@ class ProcessPanel:
         self.script_text_tag: Optional[int] = None
         self.progress_tag: Optional[int] = None
         self.status_text_tag: Optional[int] = None
+    
+    def _scale(self, size: int) -> int:
+        """Scale a size value."""
+        return int(size * self.scale)
     
     def create(self) -> None:
         """Create the process panel UI."""
@@ -89,7 +95,7 @@ class ProcessPanel:
             dpg.add_text("Status:", color=(100, 149, 237))
             self.status_text_tag = dpg.add_text("Ready", color=(149, 165, 166))
         
-        dpg.add_spacer(height=5)
+        dpg.add_spacer(height=self._scale(5))
         
         self.progress_tag = dpg.add_progress_bar(
             default_value=0.0,
@@ -97,15 +103,15 @@ class ProcessPanel:
             overlay="Idle"
         )
         
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=self._scale(10))
         dpg.add_separator()
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=self._scale(10))
         
         # Tabs for different views
         with dpg.tab_bar():
             # Issues tab
             with dpg.tab(label="Issues Found"):
-                with dpg.child_window(height=250, border=True) as container:
+                with dpg.child_window(height=self._scale(250), border=True) as container:
                     self.issues_container_tag = container
                     dpg.add_text(
                         "Run diagnosis to see issues",
@@ -114,7 +120,7 @@ class ProcessPanel:
             
             # Log tab
             with dpg.tab(label="Processing Log"):
-                with dpg.child_window(height=250, border=True):
+                with dpg.child_window(height=self._scale(250), border=True):
                     # Use input_text with readonly for selectable text
                     self.log_text_tag = dpg.add_input_text(
                         default_value="Processing log will appear here...",
@@ -127,14 +133,14 @@ class ProcessPanel:
             
             # Script tab
             with dpg.tab(label="Fix Script"):
-                with dpg.child_window(height=250, border=True):
+                with dpg.child_window(height=self._scale(250), border=True):
                     self.script_text_tag = dpg.add_text(
                         "Generated fix script will appear here...",
                         wrap=-1,
                         color=(149, 165, 166)
                     )
         
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=self._scale(10))
         
         # Action buttons - styled like header buttons and call main app handlers
         with dpg.group(horizontal=True):

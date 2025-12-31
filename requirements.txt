@@ -2,7 +2,10 @@
 # Requirements
 
 # Core
-python-magic-bin>=0.4.14
+# Note: python-magic-bin is Windows-specific, python-magic is for Linux/macOS
+# pip will automatically install the correct one based on platform
+python-magic-bin>=0.4.14; sys_platform == "win32"
+python-magic>=0.4.14; sys_platform != "win32"
 pandas>=2.0.0
 numpy>=1.24.0
 
@@ -17,7 +20,7 @@ scikit-learn>=1.3.0
 chromadb>=0.4.0
 
 # Local LLM (100% local, no API calls)
-# NOTE: PyTorch is installed separately in install.bat with CUDA support
+# NOTE: PyTorch is installed separately in install.bat (Windows) or install.sh (Linux) with CUDA support
 # If installing manually, use: pip install torch --index-url https://download.pytorch.org/whl/cu128
 # (CUDA 12.8 supports Blackwell/RTX 50-series GPUs with compute capability 12.0)
 # For CPU-only: pip install torch
@@ -29,6 +32,8 @@ protobuf>=3.20.0
 
 # GUI
 dearpygui>=1.10.0
+vispy>=0.14.0
+PyQt5>=5.15.0
 
 # Utilities
 python-dotenv>=1.0.0

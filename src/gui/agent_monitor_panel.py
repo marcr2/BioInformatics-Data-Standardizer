@@ -87,12 +87,13 @@ class AgentMonitorPanel:
         AgentPhase.ERROR: "✗",
     }
     
-    def __init__(self):
+    def __init__(self, scale: float = 1.0):
         """Initialize the agent monitor panel."""
         self.current_phase = AgentPhase.IDLE
         self.thoughts: List[ThoughtEntry] = []
         self.total_tokens = 0
         self.current_stream = ""
+        self.scale = scale
         
         # Thread-safe update queue
         self.update_queue: queue.Queue = queue.Queue()
@@ -119,12 +120,13 @@ class AgentMonitorPanel:
             # Header with phase indicator
             self._create_header()
             
-            dpg.add_spacer(height=10)
+            dpg.add_spacer(height=int(10 * self.scale))
             
             # Main content split
             with dpg.group(horizontal=True):
                 # Left: Live stream area
-                with dpg.child_window(width=-300, height=-1, border=True):
+                right_panel_width = int(300 * self.scale)
+                with dpg.child_window(width=-right_panel_width, height=-1, border=True):
                     self._create_stream_area()
                 
                 # Right: Stats and history

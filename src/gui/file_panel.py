@@ -40,70 +40,76 @@ class FilePanel:
         ".json", ".txt"
     ]
     
-    def __init__(self, on_file_loaded: Optional[Callable] = None):
+    def __init__(self, on_file_loaded: Optional[Callable] = None, scale: float = 1.0):
         """
         Initialize FilePanel.
         
         Args:
             on_file_loaded: Callback when file is loaded (df, file_path)
+            scale: Scaling factor for UI elements
         """
         self.on_file_loaded = on_file_loaded
         self.loaded_files: List[str] = []
         self.current_df: Optional[pd.DataFrame] = None
+        self.scale = scale
         
         # UI element tags
         self.file_list_tag: Optional[int] = None
         self.info_text_tag: Optional[int] = None
         self.loading_indicator_tag: Optional[int] = None
     
+    def _scale(self, size: int) -> int:
+        """Scale a size value."""
+        return int(size * self.scale)
+    
     def create(self) -> None:
         """Create the file panel UI."""
         dpg.add_text("Input Files", color=(100, 149, 237))
         dpg.add_separator()
-        dpg.add_spacer(height=5)
+        dpg.add_spacer(height=self._scale(5))
         
         # File list
-        with dpg.child_window(height=250, border=False):
+        with dpg.child_window(height=self._scale(250), border=False):
             self.file_list_tag = dpg.add_listbox(
                 items=[],
-                num_items=10,
+                num_items=max(5, int(10 * self.scale)),
                 callback=self._on_file_selected,
                 width=-1
             )
         
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=self._scale(10))
         
         # Action buttons
         with dpg.group(horizontal=True):
             dpg.add_button(
                 label="+ Add Files",
                 callback=self.show_file_dialog,
-                width=100
+                width=self._scale(100)
             )
             dpg.add_button(
                 label="Clear All",
                 callback=self._clear_files,
-                width=80
+                width=self._scale(80)
             )
         
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=self._scale(10))
         dpg.add_separator()
-        dpg.add_spacer(height=5)
+        dpg.add_spacer(height=self._scale(5))
         
         # File info section
         dpg.add_text("File Info", color=(100, 149, 237))
-        dpg.add_spacer(height=5)
+        dpg.add_spacer(height=self._scale(5))
         
-        with dpg.child_window(height=150, border=False):
+        with dpg.child_window(height=self._scale(150), border=False):
             self.info_text_tag = dpg.add_text(
                 "No file selected",
-                wrap=280,
+                wrap=self._scale(280),
                 color=(149, 165, 166)
             )
             
             self.loading_indicator_tag = dpg.add_loading_indicator(
                 show=False,
-                radius=2.0,
+                radius=2.0 * self.scale,
                 color=(100, 149, 237)
             )
         
