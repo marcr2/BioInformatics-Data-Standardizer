@@ -21,7 +21,6 @@ import time
 import zipfile
 import json
 import tempfile
-import os
 
 
 def _get_key_code(key_attr_name: str, fallback_code: int) -> int:
