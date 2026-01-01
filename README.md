@@ -1,6 +1,6 @@
 # BIDS - Bioinformatics Data Standardizer
 
-A powerful system for cleaning and standardizing messy clinical/bioinformatics data into IPA (Ingenuity Pathway Analysis) format or custom CSV schemas.
+A powerful system for cleaning and standardizing messy clinical/bioinformatics data into custom CSV schemas.
 
 ## Features
 
