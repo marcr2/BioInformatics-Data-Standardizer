@@ -204,3 +204,8 @@ models/
 
 # Cursor
 .cursor/
+
+# Local data
+exports/
+inputs/
+data/

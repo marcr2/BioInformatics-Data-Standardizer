@@ -21,6 +21,7 @@ import time
 import zipfile
 import json
 import tempfile
+import os
 
 
 def _get_key_code(key_attr_name: str, fallback_code: int) -> int:
@@ -280,25 +281,25 @@ class EmbeddingMapPanel:
                 dpg.add_button(
                     label="Refresh",
                     callback=self._on_refresh_click,
-                    width=80
+                    width=100
                 )
                 dpg.add_spacer(width=10)
                 dpg.add_button(
                     label="Reset View",
                     callback=self._reset_view,
-                    width=80
+                    width=120
                 )
                 dpg.add_spacer(width=15)
                 manage_btn = dpg.add_button(
                     label="Manage Embeddings",
                     callback=self._show_manage_embeddings_dialog,
-                    width=140
+                    width=170
                 )
                 dpg.add_spacer(width=15)
                 dpg.add_button(
                     label="Open 3D Map",
                     callback=self._open_3d_map,
-                    width=100
+                    width=130
                 )
                 dpg.add_spacer(width=-1)  # Push remaining items to the right
                 self.stats_text_tag = dpg.add_text(
@@ -981,8 +982,13 @@ class EmbeddingMapPanel:
                local_y < -50 or local_y > self.canvas_height + 50:
                 return
             
-            # Find clicked node using local coordinates
-            clicked_node = self._get_node_at_position_local(local_x, local_y)
+            # Convert local drawlist coordinates (top-left origin) to canvas-center-relative coordinates
+            # This matches the coordinate system used by _world_to_screen
+            canvas_center_x = local_x - (self.canvas_width / 2)
+            canvas_center_y = local_y - (self.canvas_height / 2)
+            
+            # Find clicked node using canvas-center-relative coordinates
+            clicked_node = self._get_node_at_position_local(canvas_center_x, canvas_center_y)
             
             if clicked_node:
                 self.selected_node = clicked_node
@@ -1015,27 +1021,62 @@ class EmbeddingMapPanel:
         except Exception:
             return None
     
-    def _get_node_at_position_local(self, local_x: float, local_y: float) -> Optional[str]:
-        """Find a node at the given local drawlist coordinates."""
+    def _get_node_at_position_local(self, canvas_x: float, canvas_y: float) -> Optional[str]:
+        """Find a node at the given canvas-center-relative coordinates."""
         if not self.nodes:
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"embedding_map_panel.py:1108","message":"No nodes available","data":{},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
             return None
         
         # Calculate base radius that scales with zoom (same as drawing)
-        base_radius = self.NODE_RADIUS * max(0.5, min(2.0, self.zoom))
+        # Increase click radius significantly for easier selection (account for scaling)
+        base_radius = self.NODE_RADIUS * max(0.5, min(2.0, self.zoom)) * self.scale
+        
+        # #region agent log
+        try:
+            with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                import json
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"embedding_map_panel.py:1115","message":"Starting node search","data":{"canvas_x":canvas_x,"canvas_y":canvas_y,"base_radius":base_radius,"zoom":self.zoom,"view_offset_x":self.view_offset_x,"view_offset_y":self.view_offset_y,"node_count":len(self.nodes)},"timestamp":int(time.time()*1000)})+"\n")
+        except: pass
+        # #endregion
         
         # Don't check bounds strictly - nodes might be outside visible area but still clickable
         # Find closest node
         closest_node = None
         closest_distance = float('inf')
+        checked_nodes = 0
+        min_distance_found = float('inf')
         
         for node_id, node in self.nodes.items():
+            checked_nodes += 1
+            # _world_to_screen returns coordinates in canvas-center-relative system
             sx, sy = self._world_to_screen(node.x, node.y)
             
-            distance = math.sqrt((local_x - sx) ** 2 + (local_y - sy) ** 2)
-            # Increase click radius for easier selection (use scaled radius)
-            if distance <= base_radius + 10 and distance < closest_distance:
+            # Compare with canvas-center-relative click coordinates
+            distance = math.sqrt((canvas_x - sx) ** 2 + (canvas_y - sy) ** 2)
+            if distance < min_distance_found:
+                min_distance_found = distance
+            # Increase click radius for easier selection (use scaled radius + padding)
+            # Add extra padding scaled by zoom and UI scale for better clickability
+            click_radius = base_radius + (15 * self.scale * max(1.0, self.zoom))
+            if distance <= click_radius and distance < closest_distance:
                 closest_distance = distance
                 closest_node = node_id
+        
+        # #region agent log
+        try:
+            with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                import json
+                sample_node = list(self.nodes.values())[0] if self.nodes else None
+                sample_sx, sample_sy = self._world_to_screen(sample_node.x, sample_node.y) if sample_node else (0, 0)
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"embedding_map_panel.py:1135","message":"Node search complete","data":{"closest_node":closest_node,"closest_distance":closest_distance,"min_distance_found":min_distance_found,"checked_nodes":checked_nodes,"base_radius":base_radius,"click_radius":base_radius+10,"sample_node_world":(sample_node.x, sample_node.y) if sample_node else None,"sample_node_screen":(sample_sx, sample_sy)},"timestamp":int(time.time()*1000)})+"\n")
+        except: pass
+        # #endregion
         
         return closest_node
     
@@ -1587,10 +1628,42 @@ class EmbeddingMapPanel:
     
     def _show_node_details(self, node: MapNode) -> None:
         """Display details for a selected node."""
+        # #region agent log
+        try:
+            with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                import json
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"embedding_map_panel.py:1588","message":"_show_node_details called","data":{"node_id":node.id if hasattr(node,'id') else None,"info_container_tag":self.info_container_tag,"container_exists":dpg.does_item_exist(self.info_container_tag) if self.info_container_tag else False},"timestamp":int(time.time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         # Clear info container
-        dpg.delete_item(self.info_container_tag, children_only=True)
+        if self.info_container_tag and dpg.does_item_exist(self.info_container_tag):
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"embedding_map_panel.py:1593","message":"Clearing info container","data":{},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            dpg.delete_item(self.info_container_tag, children_only=True)
+        else:
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"embedding_map_panel.py:1596","message":"Info container invalid or missing","data":{"info_container_tag":self.info_container_tag},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            return
         
         # Node summary
+        # #region agent log
+        try:
+            with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                import json
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"embedding_map_panel.py:1599","message":"Adding node details to container","data":{"container_exists":dpg.does_item_exist(self.info_container_tag) if self.info_container_tag else False},"timestamp":int(time.time()*1000)})+"\n")
+        except: pass
+        # #endregion
         with dpg.group(parent=self.info_container_tag):
             # Node label/type
             dpg.add_text("Node Summary", color=self.COLORS["accent"][:3])
@@ -2981,28 +3054,144 @@ fixed_df = fix_data(df)
     
     def _on_clear_embeddings_click(self) -> None:
         """Handle clear embeddings button click - shows confirmation dialog."""
+        # #region agent log
+        try:
+            with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                import json
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:2982","message":"Clear embeddings button clicked","data":{},"timestamp":int(time.time()*1000)})+"\n")
+        except: pass
+        # #endregion
         print("[DEBUG] Clear Embeddings button clicked!")
         try:
             print("[DEBUG] Creating confirmation dialog...")
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:2987","message":"Starting dialog creation","data":{},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
             # Close the manage embeddings dialog first to avoid modal-on-modal issues
+            # Must fully close parent modal before creating new one
             if dpg.does_item_exist("manage_embeddings_dialog"):
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"embedding_map_panel.py:2990","message":"Deleting manage_embeddings_dialog","data":{},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
                 dpg.delete_item("manage_embeddings_dialog")
+                # Force a render to ensure the deletion takes effect
+                dpg.render_dearpygui_frame()
             
             confirm_tag = "clear_embeddings_confirm"
             if dpg.does_item_exist(confirm_tag):
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"embedding_map_panel.py:2995","message":"Deleting existing confirm dialog","data":{"confirm_tag":confirm_tag},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
                 dpg.delete_item(confirm_tag)
             
             node_count = len(self.nodes)
             print(f"[DEBUG] Node count: {node_count}, Creating confirmation window with tag: {confirm_tag}")
             
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3000","message":"Before window creation","data":{"node_count":node_count,"confirm_tag":confirm_tag},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            
+            # Calculate window position based on viewport size (centered)
+            # Try to get viewport dimensions, fallback to fixed position
+            dialog_width = int(450 * self.scale)
+            dialog_height = int(250 * self.scale)
+            
+            try:
+                # Try multiple methods to get viewport size
+                viewport_width = None
+                viewport_height = None
+                
+                # Method 1: Try get_viewport_client_width/height (if available)
+                try:
+                    viewport_width = dpg.get_viewport_client_width()
+                    viewport_height = dpg.get_viewport_client_height()
+                except:
+                    pass
+                
+                # Method 2: Try get_viewport_width/height (alternative API)
+                if viewport_width is None:
+                    try:
+                        viewport_width = dpg.get_viewport_width()
+                        viewport_height = dpg.get_viewport_height()
+                    except:
+                        pass
+                
+                # Method 3: Try getting primary window size
+                if viewport_width is None:
+                    try:
+                        if dpg.does_item_exist("main_window"):
+                            window_size = dpg.get_item_rect_size("main_window")
+                            if window_size and len(window_size) >= 2:
+                                viewport_width = int(window_size[0])
+                                viewport_height = int(window_size[1])
+                    except:
+                        pass
+                
+                if viewport_width and viewport_height:
+                    dialog_x = int((viewport_width - dialog_width) / 2)
+                    dialog_y = int((viewport_height - dialog_height) / 2)
+                else:
+                    # Fallback to scaled fixed position
+                    dialog_x = int(400 * self.scale)
+                    dialog_y = int(400 * self.scale)
+            except Exception as e:
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3008","message":"Error calculating dialog position","data":{"error":str(e)},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
+                # Fallback to scaled fixed position
+                dialog_x = int(400 * self.scale)
+                dialog_y = int(400 * self.scale)
+            
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3005","message":"Calculated dialog position","data":{"dialog_x":dialog_x,"dialog_y":dialog_y,"dialog_width":dialog_width,"dialog_height":dialog_height,"scale":self.scale},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            
+            # Create modal window - must be at viewport level (not child of other windows)
+            # Modal windows in Dear PyGui should be created with show=True by default
             with dpg.window(
                 label="Confirm Clear Embeddings",
                 modal=True,
                 tag=confirm_tag,
-                width=450,
-                height=250,
-                pos=[400, 400]
-            ):
+                width=dialog_width,
+                height=dialog_height,
+                pos=[dialog_x, dialog_y],
+                on_close=lambda: dpg.delete_item(confirm_tag),
+                show=True  # Explicitly show the window
+            ) as dialog_window:
+                # Set item alias for proper reference (required for modal windows in Dear PyGui)
+                dpg.set_item_alias(dialog_window, confirm_tag)
+                
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3010","message":"Window created, adding content","data":{"confirm_tag":confirm_tag,"window_exists":dpg.does_item_exist(confirm_tag)},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
                 dpg.add_text("⚠ WARNING: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
                 dpg.add_spacer(height=5)
                 dpg.add_text("This action cannot be undone.", color=self.COLORS["text"][:3])
@@ -3024,7 +3213,50 @@ fixed_df = fix_data(df)
                         callback=lambda s, a, tag=confirm_tag: self._on_clear_all_confirm(tag),
                         width=100
                     )
+            
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    window_exists = dpg.does_item_exist(confirm_tag)
+                    window_visible = dpg.is_item_visible(confirm_tag) if window_exists else False
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3030","message":"After window creation","data":{"confirm_tag":confirm_tag,"window_exists":window_exists,"window_visible":window_visible},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            
+            # Modal windows should be visible by default, but ensure it's shown
+            if dpg.does_item_exist(confirm_tag):
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        window_pos = dpg.get_item_pos(confirm_tag)
+                        window_size = dpg.get_item_rect_size(confirm_tag) if dpg.does_item_exist(confirm_tag) else None
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3035","message":"Window exists, checking state","data":{"is_visible":dpg.is_item_visible(confirm_tag),"window_pos":window_pos,"window_size":window_size},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
+                # Force show the window and bring to front
+                dpg.show_item(confirm_tag)
+                # Try to bring window to front (if supported)
+                try:
+                    dpg.focus_item(confirm_tag)
+                except:
+                    pass
+                # #region agent log
+                try:
+                    with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                        import json
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"embedding_map_panel.py:3045","message":"After show_item and focus","data":{"is_visible":dpg.is_item_visible(confirm_tag)},"timestamp":int(time.time()*1000)})+"\n")
+                except: pass
+                # #endregion
         except Exception as e:
+            # #region agent log
+            try:
+                with open(r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log", "a") as f:
+                    import json
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"embedding_map_panel.py:3043","message":"Exception in _on_clear_embeddings_click","data":{"error":str(e)},"timestamp":int(time.time()*1000)})+"\n")
+            except: pass
+            # #endregion
             raise
     
     def _on_clear_all_confirm(self, confirm_dialog_tag: str) -> None:
