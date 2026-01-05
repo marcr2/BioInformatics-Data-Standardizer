@@ -74,17 +74,18 @@ class AgentMonitorPanel:
         "token_accent": (255, 193, 7, 255),
     }
     
+    # Using ASCII-compatible characters for better font compatibility
     PHASE_ICONS = {
-        AgentPhase.IDLE: "○",
-        AgentPhase.LOADING: "◌",
-        AgentPhase.ANALYZING: "◎",
-        AgentPhase.DIAGNOSING: "◉",
-        AgentPhase.THINKING: "●",
-        AgentPhase.GENERATING: "◆",
-        AgentPhase.EXECUTING: "▶",
-        AgentPhase.REVIEWING: "◈",
-        AgentPhase.COMPLETE: "✓",
-        AgentPhase.ERROR: "✗",
+        AgentPhase.IDLE: "[ ]",
+        AgentPhase.LOADING: "[.]",
+        AgentPhase.ANALYZING: "[o]",
+        AgentPhase.DIAGNOSING: "[O]",
+        AgentPhase.THINKING: "[*]",
+        AgentPhase.GENERATING: "[+]",
+        AgentPhase.EXECUTING: "[>]",
+        AgentPhase.REVIEWING: "[?]",
+        AgentPhase.COMPLETE: "[v]",
+        AgentPhase.ERROR: "[x]",
     }
     
     def __init__(self, scale: float = 1.0):
@@ -239,12 +240,12 @@ class AgentMonitorPanel:
 ============================================================
   This panel shows real-time LLM activity:                      
                                                                   
-  • ANALYZING  - Examining data structure                       
-  • DIAGNOSING - Identifying issues                             
-  • THINKING   - Reasoning about solutions                      
-  • GENERATING - Creating fix scripts                           
-  • EXECUTING  - Running generated code                         
-  • REVIEWING  - Validating results                             
+  - ANALYZING  - Examining data structure                       
+  - DIAGNOSING - Identifying issues                             
+  - THINKING   - Reasoning about solutions                      
+  - GENERATING - Creating fix scripts                           
+  - EXECUTING  - Running generated code                         
+  - REVIEWING  - Validating results                             
                                                                   
   Start a diagnosis or fix process to see the agent in action!  
 ============================================================
@@ -344,10 +345,10 @@ class AgentMonitorPanel:
     def _update_stream(self, content: str) -> None:
         """Update the stream display with new content."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        phase_icon = self.PHASE_ICONS.get(self.current_phase, "○")
+        phase_icon = self.PHASE_ICONS.get(self.current_phase, "[ ]")
         
         new_text = f"\n[{timestamp}] {phase_icon} {self.current_phase.value.upper()}\n"
-        new_text += "─" * 60 + "\n"
+        new_text += "-" * 60 + "\n"
         new_text += content + "\n"
         
         self.current_stream += new_text
@@ -382,7 +383,7 @@ class AgentMonitorPanel:
                 )
                 # Phase icon
                 dpg.add_text(
-                    self.PHASE_ICONS.get(entry.phase, "○"),
+                    self.PHASE_ICONS.get(entry.phase, "[ ]"),
                     color=color
                 )
             

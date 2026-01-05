@@ -196,9 +196,6 @@ chroma.sqlite3
 *.sqlite3
 *.db
 
-# Schemas
-schemas/
-
 # local LLMs
 models/
 

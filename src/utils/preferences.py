@@ -19,13 +19,18 @@ class PreferencesManager:
         "max_fix_attempts": 3,
         "auto_fix": True,
         "default_schema": "IPA Standard",
+        "llm_rewrite_enabled": False,  # Optional LLM-rewrite step (structural reorganization only)
         "map_canvas_width": None,  # Auto-detect if None
         "map_canvas_height": None,  # Auto-detect if None
         "map_auto_fit": True,  # Auto-fit map to screen on startup
         "window_width": None,  # Auto-detect if None
         "window_height": None,  # Auto-detect if None
         "resolution_preset": "auto",  # "auto", "1920x1080", "1366x768", "2560x1440", "3840x2160", "custom"
+        "max_tokens_percentage": 50,  # Max tokens as percentage of GPU memory (default 50%)
     }
+    
+    # Estimated tokens per GB of GPU memory (conservative estimate for 4-bit quantized models)
+    TOKENS_PER_GB = 500
     
     def __init__(self, config_file: Optional[str] = None):
         """
@@ -40,6 +45,9 @@ class PreferencesManager:
         
         self.config_file = Path(config_file)
         self._prefs: Dict[str, Any] = {}
+        # Store loaded model memory info (not persisted, runtime only)
+        self._loaded_model_id: Optional[str] = None
+        self._loaded_model_memory_gb: Optional[float] = None
         self.load()
     
     def load(self) -> None:
@@ -184,6 +192,119 @@ class PreferencesManager:
         
         # Default fallback
         return (1400, 900)
+    
+    def register_model_memory(self, model_id: str, memory_gb: float) -> None:
+        """
+        Register the GPU memory usage of a loaded model.
+        
+        Args:
+            model_id: The model identifier
+            memory_gb: Memory usage in GB
+        """
+        self._loaded_model_id = model_id
+        self._loaded_model_memory_gb = memory_gb
+    
+    def get_model_memory_info(self) -> Dict[str, Any]:
+        """
+        Get information about the loaded model's memory usage.
+        
+        Returns:
+            Dict with model_id, memory_gb, and base_percentage
+        """
+        gpu_info = self.get_gpu_info()
+        if not gpu_info["available"] or not gpu_info["memory_gb"]:
+            return {
+                "model_id": None,
+                "memory_gb": None,
+                "base_percentage": None
+            }
+        
+        if self._loaded_model_memory_gb is not None:
+            base_percentage = (self._loaded_model_memory_gb / gpu_info["memory_gb"]) * 100
+            return {
+                "model_id": self._loaded_model_id,
+                "memory_gb": self._loaded_model_memory_gb,
+                "base_percentage": base_percentage
+            }
+        
+        return {
+            "model_id": None,
+            "memory_gb": None,
+            "base_percentage": None
+        }
+    
+    def get_max_tokens(self) -> int:
+        """
+        Calculate max tokens based on GPU memory and percentage setting.
+        Uses model memory as base, then calculates from remaining memory.
+        
+        Returns:
+            Maximum tokens to use for generation
+        """
+        gpu_info = self.get_gpu_info()
+        percentage = self.get("max_tokens_percentage", 50)
+        
+        if gpu_info["available"] and gpu_info["memory_gb"]:
+            total_memory_gb = gpu_info["memory_gb"]
+            
+            # If model is loaded, use remaining memory after model
+            if self._loaded_model_memory_gb is not None:
+                available_memory_gb = total_memory_gb - self._loaded_model_memory_gb
+                # Ensure we don't go negative
+                available_memory_gb = max(0.1, available_memory_gb)
+                # Calculate tokens from available memory (after model)
+                max_tokens = int(available_memory_gb * (percentage / 100) * self.TOKENS_PER_GB)
+            else:
+                # Fallback: use total memory if model not loaded yet
+                max_tokens = int(total_memory_gb * (percentage / 100) * self.TOKENS_PER_GB)
+            
+            # Clamp to reasonable bounds
+            return max(1024, min(max_tokens, 16384))
+        else:
+            # Fallback for CPU
+            return 4096
+    
+    def set_max_tokens_percentage(self, percentage: float) -> None:
+        """
+        Set the max tokens percentage.
+        
+        Args:
+            percentage: Percentage of GPU memory to use (0-100)
+        """
+        # Clamp to valid range
+        percentage = max(10, min(100, percentage))
+        self.set("max_tokens_percentage", percentage)
+    
+    def get_max_tokens_info(self) -> Dict[str, Any]:
+        """
+        Get detailed information about max tokens settings.
+        
+        Returns:
+            Dict with percentage, calculated tokens, GPU memory info, and model memory info
+        """
+        gpu_info = self.get_gpu_info()
+        percentage = self.get("max_tokens_percentage", 50)
+        max_tokens = self.get_max_tokens()
+        model_info = self.get_model_memory_info()
+        
+        result = {
+            "percentage": percentage,
+            "max_tokens": max_tokens,
+            "gpu_available": gpu_info["available"],
+            "gpu_memory_gb": gpu_info.get("memory_gb"),
+            "tokens_per_gb": self.TOKENS_PER_GB,
+            "model_id": model_info.get("model_id"),
+            "model_memory_gb": model_info.get("memory_gb"),
+            "base_percentage": model_info.get("base_percentage")
+        }
+        
+        # Calculate available memory for tokens
+        if gpu_info.get("memory_gb") and model_info.get("memory_gb"):
+            result["available_memory_gb"] = gpu_info["memory_gb"] - model_info["memory_gb"]
+        else:
+            result["available_memory_gb"] = None
+        
+        return result
 
 
 # Global preferences instance

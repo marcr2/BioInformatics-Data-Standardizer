@@ -324,9 +324,10 @@ class BIDSApp:
                                     main_app=self,
                                     scale=self.scale
                                 )
-                                # Set checkpoint manager
-                                self.process_panel.checkpoint_manager = self.checkpoint_manager
+                                # Create process panel first
                                 self.process_panel.create()
+                                # Set checkpoint manager (will update orchestrator)
+                                self.process_panel.set_checkpoint_manager(self.checkpoint_manager)
                             
                             # Embedding Map tab - Interactive visualization
                             with dpg.tab(label="Embedding Map"):
@@ -647,6 +648,15 @@ class BIDSApp:
         """Show the preferences dialog."""
         from ..utils.preferences import get_preferences
         
+        # Delete existing preferences dialog and its tagged items if they exist
+        if dpg.does_item_exist("preferences_dialog"):
+            dpg.delete_item("preferences_dialog")
+        
+        # Also delete any tagged items that might persist
+        for tag in ["max_tokens_display", "max_tokens_slider", "max_tokens_percent_label"]:
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+        
         prefs = get_preferences()
         gpu_info = prefs.get_gpu_info()
         
@@ -697,6 +707,96 @@ class BIDSApp:
                     color=self.COLORS["warning"],
                     wrap=-1
                 )
+            
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # LLM Token Settings
+            dpg.add_text("LLM Token Settings", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            token_info = prefs.get_max_tokens_info()
+            
+            # Build display text with model memory info
+            if token_info.get('model_id') and token_info.get('model_memory_gb'):
+                model_name = token_info['model_id'].split('/')[-1]  # Get just the model name
+                base_pct = token_info.get('base_percentage', 0)
+                display_text = (
+                    f"Current max tokens: {token_info['max_tokens']} "
+                    f"({token_info['percentage']}% of available memory after model)\n"
+                    f"Model: {model_name} ({token_info['model_memory_gb']:.2f} GB, {base_pct:.1f}% of GPU)"
+                )
+            else:
+                display_text = (
+                    f"Current max tokens: {token_info['max_tokens']} "
+                    f"({token_info['percentage']}% of GPU memory)\n"
+                    f"Model not loaded yet - will auto-detect when loaded"
+                )
+            
+            dpg.add_text(
+                display_text,
+                color=(149, 165, 166),
+                tag="max_tokens_display",
+                wrap=-1
+            )
+            dpg.add_spacer(height=5)
+            
+            with dpg.group(horizontal=True):
+                dpg.add_text("Max Tokens (% of available):", color=self.COLORS["text_dim"])
+                dpg.add_spacer(width=10)
+                dpg.add_slider_int(
+                    default_value=int(token_info['percentage']),
+                    min_value=10,
+                    max_value=100,
+                    width=self.scale_width(200),
+                    callback=self._on_max_tokens_changed,
+                    tag="max_tokens_slider"
+                )
+                dpg.add_spacer(width=10)
+                dpg.add_text(f"{token_info['percentage']}%", tag="max_tokens_percent_label")
+            
+            if token_info['gpu_available'] and token_info['gpu_memory_gb']:
+                gpu_text = f"Total GPU Memory: {token_info['gpu_memory_gb']:.1f} GB"
+                if token_info.get('available_memory_gb'):
+                    gpu_text += f", Available: {token_info['available_memory_gb']:.2f} GB"
+                gpu_text += f", ~{token_info['tokens_per_gb']} tokens/GB"
+                dpg.add_text(
+                    gpu_text,
+                    color=(149, 165, 166)
+                )
+            else:
+                dpg.add_text(
+                    "GPU not available - using default token limit (4096)",
+                    color=self.COLORS["warning"]
+                )
+            
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # LLM-Rewrite Settings
+            dpg.add_text("LLM-Rewrite Step", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            dpg.add_text(
+                "Optional step that uses LLM to reorganize data structure to match schema.",
+                color=(149, 165, 166),
+                wrap=-1
+            )
+            dpg.add_text(
+                "Only affects column names/organization - data values are NOT modified.",
+                color=(149, 165, 166),
+                wrap=-1
+            )
+            dpg.add_spacer(height=5)
+            
+            llm_rewrite_enabled = prefs.get("llm_rewrite_enabled", False)
+            dpg.add_checkbox(
+                label="Enable LLM-Rewrite Step (structural reorganization only)",
+                default_value=llm_rewrite_enabled,
+                callback=self._on_llm_rewrite_toggle_changed
+            )
             
             dpg.add_spacer(height=10)
             dpg.add_separator()
@@ -903,6 +1003,48 @@ class BIDSApp:
             dpg.set_value(self.status_text, "GPU acceleration enabled (restart recommended)")
         else:
             dpg.set_value(self.status_text, "GPU acceleration disabled (restart recommended)")
+    
+    def _on_llm_rewrite_toggle_changed(self, sender, app_data) -> None:
+        """Handle LLM-Rewrite toggle checkbox change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        prefs.set("llm_rewrite_enabled", app_data)
+        
+        # Show message
+        if app_data:
+            dpg.set_value(self.status_text, "LLM-Rewrite step enabled (structural reorganization only)")
+        else:
+            dpg.set_value(self.status_text, "LLM-Rewrite step disabled")
+    
+    def _on_max_tokens_changed(self, sender, app_data) -> None:
+        """Handle max tokens slider change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        prefs.set_max_tokens_percentage(app_data)
+        
+        # Update display
+        token_info = prefs.get_max_tokens_info()
+        if dpg.does_item_exist("max_tokens_display"):
+            # Build display text with model memory info
+            if token_info.get('model_id') and token_info.get('model_memory_gb'):
+                model_name = token_info['model_id'].split('/')[-1]  # Get just the model name
+                base_pct = token_info.get('base_percentage', 0)
+                display_text = (
+                    f"Current max tokens: {token_info['max_tokens']} "
+                    f"({token_info['percentage']}% of available memory after model)\n"
+                    f"Model: {model_name} ({token_info['model_memory_gb']:.2f} GB, {base_pct:.1f}% of GPU)"
+                )
+            else:
+                display_text = (
+                    f"Current max tokens: {token_info['max_tokens']} "
+                    f"({token_info['percentage']}% of GPU memory)\n"
+                    f"Model not loaded yet - will auto-detect when loaded"
+                )
+            dpg.set_value("max_tokens_display", display_text)
+        if dpg.does_item_exist("max_tokens_percent_label"):
+            dpg.set_value("max_tokens_percent_label", f"{token_info['percentage']}%")
+        
+        dpg.set_value(self.status_text, f"Max tokens set to {token_info['max_tokens']} ({app_data}%)")
     
     def _on_max_attempts_changed(self, sender, app_data) -> None:
         """Handle max fix attempts input change."""

@@ -486,13 +486,19 @@ class SmartIngestor:
     @staticmethod
     def _replace_non_ascii(df: pd.DataFrame) -> pd.DataFrame:
         """
-        Replace non-ASCII characters with ASCII equivalents in string columns.
+        Clean problematic characters from string columns while preserving readable Unicode.
+        
+        This method:
+        - Preserves most Unicode characters (letters, symbols, etc.) that GUI can display
+        - Removes only problematic control characters (except common ones like tab, newline)
+        - Normalizes Unicode to NFC form for consistent display
+        - Handles invalid UTF-8 sequences gracefully
         
         Args:
             df: Input DataFrame
             
         Returns:
-            DataFrame with non-ASCII characters replaced
+            DataFrame with problematic characters cleaned
         """
         result = df.copy()
         
@@ -503,22 +509,44 @@ class SmartIngestor:
             # Convert to string, handling NaN values
             col_str = result[col].astype(str)
             
-            # Replace non-ASCII characters
-            def replace_char(s):
+            def clean_string(s):
+                """Clean string while preserving readable Unicode characters."""
                 # Skip if it was originally NaN (now 'nan' string)
                 if s == 'nan':
                     return s
                 try:
-                    # Normalize to NFKD (decomposed form) and remove non-ASCII
-                    normalized = unicodedata.normalize('NFKD', str(s))
-                    # Keep only ASCII characters
-                    ascii_only = normalized.encode('ascii', 'ignore').decode('ascii')
-                    return ascii_only
+                    # Normalize to NFC form (composed form - better for display)
+                    normalized = unicodedata.normalize('NFC', str(s))
+                    
+                    # Only remove truly problematic characters:
+                    # - Control characters (0x00-0x1F) except tab (0x09), LF (0x0A), CR (0x0D)
+                    # - Delete character (0x7F)
+                    # - Invalid/private use Unicode characters
+                    cleaned = []
+                    for char in normalized:
+                        code = ord(char)
+                        # Keep tab, newline, carriage return
+                        if char in '\t\n\r':
+                            cleaned.append(char)
+                        # Remove other control characters (0x00-0x1F and 0x7F)
+                        elif code < 0x20 or code == 0x7F:
+                            continue
+                        # Remove replacement character (often indicates encoding issues)
+                        elif code == 0xFFFD:
+                            cleaned.append('?')
+                        # Remove private use area characters (unlikely to render correctly)
+                        elif 0xE000 <= code <= 0xF8FF:
+                            continue
+                        # Keep all other characters (including Unicode letters, symbols, etc.)
+                        else:
+                            cleaned.append(char)
+                    
+                    return ''.join(cleaned)
                 except Exception:
-                    # If replacement fails, return original
+                    # If cleaning fails, return original
                     return s
             
-            col_str = col_str.apply(replace_char)
+            col_str = col_str.apply(clean_string)
             
             # Restore original NaN values
             col_str[nan_mask] = pd.NA

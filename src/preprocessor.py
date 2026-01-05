@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 
 from .schema_manager import Schema, SchemaManager, ColumnDefinition, ColumnType, TransformType, ValidationResult
+from .utils.logger import get_logger, debug, info
 
 
 @dataclass
@@ -77,55 +78,79 @@ class RulesBasedPreprocessor:
         changes_made = []
         issues_remaining = []
         
+        debug(f"Starting preprocessing: {df.shape[0]} rows, {df.shape[1]} columns, schema: {schema.name}", context="Preprocessor")
+        
         # Work with a copy
         result_df = df.copy()
         
         # Step 1: Basic cleaning
+        debug("Step 1: Basic cleaning (remove empty columns, whitespace, duplicates)", context="Preprocessor")
         result_df, cleaning_changes = self._clean_dataframe(result_df)
         changes_made.extend(cleaning_changes)
+        if cleaning_changes:
+            debug(f"  Cleaning changes: {len(cleaning_changes)}", context="Preprocessor")
         
         # Step 2: Get column mapping
+        debug("Step 2: Column mapping", context="Preprocessor")
         if sm:
             validation = sm.validate_dataframe(result_df, schema)
             column_mapping = validation.column_mapping
         else:
             column_mapping = self._auto_map_columns(result_df, schema)
+        debug(f"  Mapped {len(column_mapping)} columns", context="Preprocessor")
         
         # Step 3: Apply schema transformations
+        debug("Step 3: Apply schema transformations", context="Preprocessor")
         result_df, transform_changes = self._apply_schema_transforms(
             result_df, schema, column_mapping
         )
         changes_made.extend(transform_changes)
+        if transform_changes:
+            debug(f"  Transform changes: {len(transform_changes)}", context="Preprocessor")
         
         # Step 4: Type conversions
+        debug("Step 4: Type conversions", context="Preprocessor")
         result_df, type_changes = self._convert_types(
             result_df, schema, column_mapping
         )
         changes_made.extend(type_changes)
+        if type_changes:
+            debug(f"  Type conversions: {len(type_changes)}", context="Preprocessor")
         
         # Step 5: Fix pattern violations
+        debug("Step 5: Fix pattern violations", context="Preprocessor")
         result_df, pattern_changes, pattern_issues = self._fix_pattern_violations(
             result_df, schema, column_mapping
         )
         changes_made.extend(pattern_changes)
         issues_remaining.extend(pattern_issues)
+        if pattern_changes or pattern_issues:
+            debug(f"  Pattern: {len(pattern_changes)} fixes, {len(pattern_issues)} remaining issues", context="Preprocessor")
         
         # Step 6: Fix range violations
+        debug("Step 6: Fix range violations", context="Preprocessor")
         result_df, range_changes, range_issues = self._fix_range_violations(
             result_df, schema, column_mapping
         )
         changes_made.extend(range_changes)
         issues_remaining.extend(range_issues)
+        if range_changes or range_issues:
+            debug(f"  Range: {len(range_changes)} fixes, {len(range_issues)} remaining issues", context="Preprocessor")
         
         # Step 7: Handle null values
+        debug("Step 7: Handle null values", context="Preprocessor")
         result_df, null_changes, null_issues = self._handle_null_values(
             result_df, schema, column_mapping
         )
         changes_made.extend(null_changes)
         issues_remaining.extend(null_issues)
+        if null_changes or null_issues:
+            debug(f"  Null handling: {len(null_changes)} fixes, {len(null_issues)} remaining issues", context="Preprocessor")
         
         # Generate report
         report = self._generate_report(changes_made, issues_remaining, schema)
+        
+        info(f"Preprocessing complete: {len(changes_made)} total changes, {len(issues_remaining)} remaining issues", context="Preprocessor")
         
         return PreprocessingResult(
             preprocessed_df=result_df,

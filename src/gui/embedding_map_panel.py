@@ -218,16 +218,17 @@ class EmbeddingMapPanel:
     
     def _world_to_screen(self, world_x: float, world_y: float) -> Tuple[float, float]:
         """
-        Convert world coordinates to screen coordinates.
+        Convert world coordinates to screen coordinates (local drawlist coordinates).
         
         Args:
             world_x: World X coordinate
             world_y: World Y coordinate
             
         Returns:
-            Tuple of (screen_x, screen_y)
+            Tuple of (screen_x, screen_y) in local drawlist coordinates (top-left origin)
         """
         # Apply zoom and offset transformation
+        # World origin (0,0) maps to canvas center, so add center offset
         screen_x = (world_x * self.zoom) + self.view_offset_x + (self.canvas_width / 2)
         screen_y = (world_y * self.zoom) + self.view_offset_y + (self.canvas_height / 2)
         return (screen_x, screen_y)
@@ -351,17 +352,17 @@ class EmbeddingMapPanel:
         
         dpg.add_spacer(height=5)
         
-        # Legend
+        # Legend (using ASCII-compatible characters for better font support)
         with dpg.group(horizontal=True):
             dpg.add_text("Legend:", color=self.COLORS["text_dim"][:3])
             dpg.add_spacer(width=10)
-            dpg.add_text("●", color=self.COLORS["node_success"][:3])
+            dpg.add_text("[o]", color=self.COLORS["node_success"][:3])
             dpg.add_text("Success", color=self.COLORS["text_dim"][:3])
             dpg.add_spacer(width=10)
-            dpg.add_text("●", color=self.COLORS["node_failure"][:3])
+            dpg.add_text("[o]", color=self.COLORS["node_failure"][:3])
             dpg.add_text("Failure", color=self.COLORS["text_dim"][:3])
             dpg.add_spacer(width=10)
-            dpg.add_text("●", color=self.COLORS["node_pending"][:3])
+            dpg.add_text("[o]", color=self.COLORS["node_pending"][:3])
             dpg.add_text("Pending", color=self.COLORS["text_dim"][:3])
         
         dpg.add_spacer(height=5)
@@ -964,30 +965,41 @@ class EmbeddingMapPanel:
         
         # Get mouse position (local to drawlist)
         try:
-            # Get mouse position relative to the drawlist
-            # Try to get local position directly if available
+            # Get mouse position - use exact same method as mouse move handler
+            # The mouse move handler works for hover, so we should match it exactly
             mouse_pos = dpg.get_mouse_pos(local=False)
             drawlist_pos = dpg.get_item_pos(self.drawlist_tag)
             
             if not drawlist_pos:
                 return
             
-            # Convert to local coordinates relative to drawlist
+            # Convert to local coordinates - EXACTLY match the mouse move handler
             local_x = mouse_pos[0] - drawlist_pos[0]
             local_y = mouse_pos[1] - drawlist_pos[1]
+            
+            # #region agent log
+            import json
+            log_path = r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"A","location":"embedding_map_panel.py:977","message":"Click coordinates","data":{"mouse_pos":[float(mouse_pos[0]),float(mouse_pos[1])],"drawlist_pos":[float(drawlist_pos[0]),float(drawlist_pos[1])],"local_x":float(local_x),"local_y":float(local_y),"canvas_width":int(self.canvas_width),"canvas_height":int(self.canvas_height),"view_offset_x":float(self.view_offset_x),"view_offset_y":float(self.view_offset_y),"zoom":float(self.zoom)},"timestamp":int(time.time()*1000)}) + "\n")
+            # #endregion
             
             # Ensure coordinates are within drawlist bounds (or allow slightly outside for edge cases)
             if local_x < -50 or local_x > self.canvas_width + 50 or \
                local_y < -50 or local_y > self.canvas_height + 50:
+                # #region agent log
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"B","location":"embedding_map_panel.py:981","message":"Click out of bounds","data":{"local_x":local_x,"local_y":local_y},"timestamp":int(time.time()*1000)}) + "\n")
+                # #endregion
                 return
             
-            # Convert local drawlist coordinates (top-left origin) to canvas-center-relative coordinates
-            # This matches the coordinate system used by _world_to_screen
-            canvas_center_x = local_x - (self.canvas_width / 2)
-            canvas_center_y = local_y - (self.canvas_height / 2)
+            # Find clicked node using local coordinates (same system as _world_to_screen returns)
+            clicked_node = self._get_node_at_position_local(local_x, local_y)
             
-            # Find clicked node using canvas-center-relative coordinates
-            clicked_node = self._get_node_at_position_local(canvas_center_x, canvas_center_y)
+            # #region agent log
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"C","location":"embedding_map_panel.py:986","message":"Click result","data":{"clicked_node":str(clicked_node) if clicked_node else None},"timestamp":int(time.time()*1000)}) + "\n")
+            # #endregion
             
             if clicked_node:
                 self.selected_node = clicked_node
@@ -1020,32 +1032,59 @@ class EmbeddingMapPanel:
         except Exception:
             return None
     
-    def _get_node_at_position_local(self, canvas_x: float, canvas_y: float) -> Optional[str]:
-        """Find a node at the given canvas-center-relative coordinates."""
+    def _get_node_at_position_local(self, local_x: float, local_y: float) -> Optional[str]:
+        """Find a node at the given local drawlist coordinates (top-left origin)."""
         if not self.nodes:
             return None
+        
+        # #region agent log
+        import json
+        log_path = r"c:\Users\marce\Desktop\BIDS\.cursor\debug.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"D","location":"embedding_map_panel.py:1019","message":"Node search start","data":{"local_x":float(local_x),"local_y":float(local_y),"num_nodes":len(self.nodes),"base_radius":float(self.NODE_RADIUS),"zoom":float(self.zoom),"scale":float(self.scale)},"timestamp":int(time.time()*1000)}) + "\n")
+        # #endregion
         
         # Calculate base radius that scales with zoom (same as drawing)
         # Increase click radius significantly for easier selection (account for scaling)
         base_radius = self.NODE_RADIUS * max(0.5, min(2.0, self.zoom)) * self.scale
+        click_radius = base_radius + (15 * self.scale * max(1.0, self.zoom))
+        
+        # #region agent log
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"E","location":"embedding_map_panel.py:1026","message":"Click radius calculation","data":{"base_radius":float(base_radius),"click_radius":float(click_radius)},"timestamp":int(time.time()*1000)}) + "\n")
+        # #endregion
         
         # Don't check bounds strictly - nodes might be outside visible area but still clickable
         # Find closest node
         closest_node = None
         closest_distance = float('inf')
+        candidates = []
         
         for node_id, node in self.nodes.items():
-            # _world_to_screen returns coordinates in canvas-center-relative system
+            # _world_to_screen returns coordinates in local drawlist coordinate system
             sx, sy = self._world_to_screen(node.x, node.y)
             
-            # Compare with canvas-center-relative click coordinates
-            distance = math.sqrt((canvas_x - sx) ** 2 + (canvas_y - sy) ** 2)
-            # Increase click radius for easier selection (use scaled radius + padding)
-            # Add extra padding scaled by zoom and UI scale for better clickability
-            click_radius = base_radius + (15 * self.scale * max(1.0, self.zoom))
-            if distance <= click_radius and distance < closest_distance:
-                closest_distance = distance
-                closest_node = node_id
+            # Compare with local click coordinates (same coordinate system)
+            # Both are in local drawlist coordinates (top-left origin)
+            distance = math.sqrt((local_x - sx) ** 2 + (local_y - sy) ** 2)
+            
+            # #region agent log
+            if len(candidates) < 10:  # Log first 10 nodes
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"F","location":"embedding_map_panel.py:1035","message":"Node distance","data":{"node_id":str(node_id),"world_x":float(node.x),"world_y":float(node.y),"screen_x":float(sx),"screen_y":float(sy),"click_x":float(local_x),"click_y":float(local_y),"distance":float(distance),"click_radius":float(click_radius),"within_radius":bool(distance <= click_radius)},"timestamp":int(time.time()*1000)}) + "\n")
+            # #endregion
+            
+            if distance <= click_radius:
+                candidates.append({"node_id": node_id, "distance": distance})
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_node = node_id
+        
+        # #region agent log
+        with open(log_path, "a", encoding="utf-8") as f:
+            serializable_candidates = [{"node_id": str(c["node_id"]), "distance": float(c["distance"])} for c in candidates[:5]]
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"G","location":"embedding_map_panel.py:1046","message":"Node search result","data":{"closest_node":str(closest_node) if closest_node else None,"closest_distance":float(closest_distance) if closest_distance != float('inf') else None,"num_candidates":len(candidates),"candidates":serializable_candidates},"timestamp":int(time.time()*1000)}) + "\n")
+        # #endregion
         
         return closest_node
     
@@ -2567,7 +2606,7 @@ fixed_df = fix_data(df)
             dpg.add_spacer(height=10)
             
             # Delete all embeddings
-            dpg.add_text("⚠ Warning: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
+            dpg.add_text("[!] Warning: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
             dpg.add_spacer(height=5)
             self.delete_all_button = dpg.add_button(
                 label="Delete All Embeddings",
@@ -2861,7 +2900,7 @@ fixed_df = fix_data(df)
             height=250,
             pos=[300, 300]
         ):
-            dpg.add_text("⚠ WARNING: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
+            dpg.add_text("[!] WARNING: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
             dpg.add_spacer(height=5)
             dpg.add_text(f"This action cannot be undone.", color=self.COLORS["text"][:3])
             dpg.add_text(f"Total embeddings to delete: {node_count}", color=self.COLORS["text_dim"][:3])
@@ -3073,7 +3112,7 @@ fixed_df = fix_data(df)
             ) as dialog_window:
                 # Set item alias for proper reference (required for modal windows in Dear PyGui)
                 dpg.set_item_alias(dialog_window, confirm_tag)
-                dpg.add_text("⚠ WARNING: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
+                dpg.add_text("[!] WARNING: This will delete ALL embeddings!", color=self.COLORS["node_failure"][:3])
                 dpg.add_spacer(height=5)
                 dpg.add_text("This action cannot be undone.", color=self.COLORS["text"][:3])
                 dpg.add_text(f"Total embeddings to delete: {node_count}", color=self.COLORS["text_dim"][:3])
@@ -3160,7 +3199,7 @@ fixed_df = fix_data(df)
                     height=150,
                     pos=[450, 400]
                 ):
-                    dpg.add_text(f"✓ Successfully deleted {node_count} embeddings!", color=self.COLORS["node_success"][:3])
+                    dpg.add_text(f"[OK] Successfully deleted {node_count} embeddings!", color=self.COLORS["node_success"][:3])
                     dpg.add_spacer(height=20)
                     with dpg.group(horizontal=True):
                         dpg.add_spacer(width=-1)
@@ -3187,7 +3226,7 @@ fixed_df = fix_data(df)
                     height=150,
                     pos=[450, 400]
                 ):
-                    dpg.add_text("✗ Failed to delete embeddings from vector store!", color=self.COLORS["node_failure"][:3])
+                    dpg.add_text("[ERROR] Failed to delete embeddings from vector store!", color=self.COLORS["node_failure"][:3])
                     dpg.add_spacer(height=20)
                     with dpg.group(horizontal=True):
                         dpg.add_spacer(width=-1)
@@ -3501,7 +3540,7 @@ fixed_df = fix_data(df)
                 
                 if count > 0:
                     # Show success message in a popup dialog
-                    success_msg = f"✓ {count} embedding{'s' if count != 1 else ''} successfully loaded!"
+                    success_msg = f"[OK] {count} embedding{'s' if count != 1 else ''} successfully loaded!"
                     
                     # Show success popup
                     success_dialog_tag = "import_success_dialog"

@@ -133,7 +133,7 @@ class DataStatePanel:
             
             if info.get("has_dataframe"):
                 shape = info.get("dataframe_shape", (0, 0))
-                info_text += f"DataFrame Shape: {shape[0]} rows × {shape[1]} columns\n"
+                info_text += f"DataFrame Shape: {shape[0]} rows x {shape[1]} columns\n"
             
             metadata = info.get("metadata", {})
             if metadata:
