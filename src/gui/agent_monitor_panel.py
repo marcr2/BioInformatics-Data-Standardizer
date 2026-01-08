@@ -28,6 +28,7 @@ class AgentPhase(Enum):
     GENERATING = "generating"
     EXECUTING = "executing"
     REVIEWING = "reviewing"
+    FIXING = "fixing"
     COMPLETE = "complete"
     ERROR = "error"
 
@@ -68,6 +69,7 @@ class AgentMonitorPanel:
         "phase_generating": (46, 204, 113, 255),
         "phase_executing": (230, 126, 34, 255),
         "phase_reviewing": (52, 152, 219, 255),
+        "phase_fixing": (142, 68, 173, 255),
         "phase_complete": (46, 204, 113, 255),
         "phase_error": (231, 76, 60, 255),
         "stream_bg": (28, 30, 40, 255),
@@ -84,6 +86,7 @@ class AgentMonitorPanel:
         AgentPhase.GENERATING: "[+]",
         AgentPhase.EXECUTING: "[>]",
         AgentPhase.REVIEWING: "[?]",
+        AgentPhase.FIXING: "[~]",
         AgentPhase.COMPLETE: "[v]",
         AgentPhase.ERROR: "[x]",
     }

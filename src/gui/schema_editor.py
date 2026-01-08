@@ -49,16 +49,22 @@ class SchemaEditor:
     """
     
     COLUMN_TYPES = ["string", "int", "float", "bool", "date", "datetime"]
-    TRANSFORMS = ["none", "uppercase", "lowercase", "trim", "log2", "log10", "abs", "round", "negate"]
+    TRANSFORMS = ["none", "uppercase", "lowercase", "trim", "log2", "log10", "abs", "round", "negate",
+                  "fdr_benjamini_hochberg", "fdr_benjamini_yekutieli", "bonferroni", "holm_bonferroni"]
     
-    def __init__(self, on_schema_changed: Optional[Callable] = None):
+    # Statistical test transforms
+    STAT_TRANSFORMS = ["fdr_benjamini_hochberg", "fdr_benjamini_yekutieli", "bonferroni", "holm_bonferroni"]
+    
+    def __init__(self, on_schema_changed: Optional[Callable] = None, get_available_columns: Optional[Callable[[], List[str]]] = None):
         """
         Initialize SchemaEditor.
         
         Args:
             on_schema_changed: Callback when schema changes
+            get_available_columns: Callback to get list of available column names from current dataset
         """
         self.on_schema_changed = on_schema_changed
+        self.get_available_columns = get_available_columns or (lambda: [])
         self.schema_manager = None
         self.current_schema = None
         self.column_rows: List[Dict[str, Any]] = []
@@ -168,7 +174,9 @@ class SchemaEditor:
             "type": "string",
             "source": "auto",
             "transform": "none",
-            "required": True
+            "required": True,
+            "stat_test_source_column": None,
+            "stat_test_alpha": 0.05
         }
         
         with dpg.group(horizontal=True, parent=self.columns_container_tag) as row_group:
@@ -195,7 +203,9 @@ class SchemaEditor:
             transform_combo = dpg.add_combo(
                 items=self.TRANSFORMS,
                 default_value=defaults["transform"],
-                width=80
+                width=120,
+                callback=lambda s, a, u: self._on_transform_changed(s, a, u),
+                user_data=row_id
             )
             
             # Required checkbox
@@ -211,6 +221,42 @@ class SchemaEditor:
                 user_data=row_id
             )
         
+        # Statistical test configuration group (initially hidden)
+        stat_test_group = None
+        stat_source_combo = None
+        stat_alpha_input = None
+        
+        # Create statistical test UI group (will be shown/hidden based on transform)
+        with dpg.group(parent=self.columns_container_tag) as stat_test_group:
+            # Add spacing to align with row above
+            dpg.add_spacer(width=305, height=0)
+            
+            # Source column selector for p-values
+            available_cols = self.get_available_columns()
+            stat_source_combo = dpg.add_combo(
+                items=available_cols if available_cols else ["No columns available"],
+                default_value=defaults.get("stat_test_source_column", ""),
+                width=150,
+                label="P-value column:",
+                enabled=len(available_cols) > 0
+            )
+            
+            dpg.add_spacer(width=10)
+            
+            # Alpha input
+            stat_alpha_input = dpg.add_input_float(
+                default_value=defaults.get("stat_test_alpha", 0.05),
+                width=80,
+                label="Alpha:",
+                min_value=0.0,
+                max_value=1.0,
+                format="%.3f"
+            )
+        
+        # Initially hide if not a statistical test
+        if defaults["transform"] not in self.STAT_TRANSFORMS:
+            dpg.hide_item(stat_test_group)
+        
         self.column_rows.append({
             "id": row_id,
             "group": row_group,
@@ -218,14 +264,45 @@ class SchemaEditor:
             "type": type_combo,
             "source": source_input,
             "transform": transform_combo,
-            "required": required_check
+            "required": required_check,
+            "stat_test_group": stat_test_group,
+            "stat_source_combo": stat_source_combo,
+            "stat_alpha_input": stat_alpha_input
         })
+    
+    def _on_transform_changed(self, sender, app_data, user_data) -> None:
+        """Handle transform combo change - show/hide statistical test UI."""
+        row_id = user_data
+        transform_value = app_data
+        
+        # Find the row
+        for row in self.column_rows:
+            if row["id"] == row_id:
+                if transform_value in self.STAT_TRANSFORMS:
+                    # Show statistical test UI
+                    dpg.show_item(row["stat_test_group"])
+                    # Update available columns
+                    available_cols = self.get_available_columns()
+                    if available_cols:
+                        dpg.configure_item(row["stat_source_combo"], items=available_cols, enabled=True)
+                    else:
+                        dpg.configure_item(row["stat_source_combo"], items=["No columns available"], enabled=False)
+                else:
+                    # Hide statistical test UI
+                    dpg.hide_item(row["stat_test_group"])
+                break
     
     def _remove_column_row(self, row_id: int) -> None:
         """Remove a column row."""
         for i, row in enumerate(self.column_rows):
             if row["id"] == row_id:
                 dpg.delete_item(row["group"])
+                # Also delete statistical test group if it exists
+                if "stat_test_group" in row and row["stat_test_group"]:
+                    try:
+                        dpg.delete_item(row["stat_test_group"])
+                    except Exception:
+                        pass
                 self.column_rows.pop(i)
                 break
     
@@ -234,6 +311,12 @@ class SchemaEditor:
         for row in self.column_rows:
             try:
                 dpg.delete_item(row["group"])
+                # Also delete statistical test group if it exists
+                if "stat_test_group" in row and row["stat_test_group"]:
+                    try:
+                        dpg.delete_item(row["stat_test_group"])
+                    except Exception:
+                        pass
             except Exception:
                 pass
         self.column_rows = []
@@ -267,7 +350,9 @@ class SchemaEditor:
                 "type": col.type.value,
                 "source": col.source,
                 "transform": col.transform.value,
-                "required": col.required
+                "required": col.required,
+                "stat_test_source_column": col.stat_test_source_column,
+                "stat_test_alpha": col.stat_test_alpha if col.stat_test_alpha is not None else 0.05
             })
         
         # Trigger callback
@@ -320,12 +405,32 @@ class SchemaEditor:
         # Build column definitions
         columns = []
         for row in self.column_rows:
+            transform_value = dpg.get_value(row["transform"])
+            # Get statistical test parameters if it's a statistical test transform
+            stat_test_source = None
+            stat_test_method = None
+            stat_test_alpha = None
+            if transform_value in self.STAT_TRANSFORMS:
+                stat_test_source = dpg.get_value(row["stat_source_combo"])
+                stat_test_alpha = dpg.get_value(row["stat_alpha_input"])
+                # Map transform to method name
+                method_map = {
+                    "fdr_benjamini_hochberg": "fdr_bh",
+                    "fdr_benjamini_yekutieli": "fdr_by",
+                    "bonferroni": "bonferroni",
+                    "holm_bonferroni": "holm"
+                }
+                stat_test_method = method_map.get(transform_value)
+            
             col = CD(
                 name=dpg.get_value(row["name"]),
                 type=CT(dpg.get_value(row["type"])),
                 source=dpg.get_value(row["source"]),
-                transform=TT(dpg.get_value(row["transform"])),
-                required=dpg.get_value(row["required"])
+                transform=TT(transform_value),
+                required=dpg.get_value(row["required"]),
+                stat_test_source_column=stat_test_source if stat_test_source else None,
+                stat_test_method=stat_test_method,
+                stat_test_alpha=stat_test_alpha if stat_test_alpha is not None else 0.05
             )
             columns.append(col)
         
@@ -384,12 +489,32 @@ class SchemaEditor:
         
         columns = []
         for row in self.column_rows:
+            transform_value = dpg.get_value(row["transform"])
+            # Get statistical test parameters if it's a statistical test transform
+            stat_test_source = None
+            stat_test_method = None
+            stat_test_alpha = None
+            if transform_value in self.STAT_TRANSFORMS:
+                stat_test_source = dpg.get_value(row["stat_source_combo"])
+                stat_test_alpha = dpg.get_value(row["stat_alpha_input"])
+                # Map transform to method name
+                method_map = {
+                    "fdr_benjamini_hochberg": "fdr_bh",
+                    "fdr_benjamini_yekutieli": "fdr_by",
+                    "bonferroni": "bonferroni",
+                    "holm_bonferroni": "holm"
+                }
+                stat_test_method = method_map.get(transform_value)
+            
             col = CD(
                 name=dpg.get_value(row["name"]),
                 type=CT(dpg.get_value(row["type"])),
                 source=dpg.get_value(row["source"]),
-                transform=TT(dpg.get_value(row["transform"])),
-                required=dpg.get_value(row["required"])
+                transform=TT(transform_value),
+                required=dpg.get_value(row["required"]),
+                stat_test_source_column=stat_test_source if stat_test_source else None,
+                stat_test_method=stat_test_method,
+                stat_test_alpha=stat_test_alpha if stat_test_alpha is not None else 0.05
             )
             columns.append(col)
         

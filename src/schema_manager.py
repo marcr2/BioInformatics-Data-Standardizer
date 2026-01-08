@@ -38,6 +38,11 @@ class TransformType(Enum):
     ABS = "abs"
     ROUND = "round"
     NEGATE = "negate"
+    # Statistical test transformations
+    FDR_BENJAMINI_HOCHBERG = "fdr_benjamini_hochberg"
+    FDR_BENJAMINI_YEKUTIELI = "fdr_benjamini_yekutieli"
+    BONFERRONI = "bonferroni"
+    HOLM_BONFERRONI = "holm_bonferroni"
 
 
 @dataclass
@@ -53,6 +58,10 @@ class ColumnDefinition:
     validation_regex: Optional[str] = None
     min_value: Optional[float] = None
     max_value: Optional[float] = None
+    # Statistical test parameters
+    stat_test_source_column: Optional[str] = None  # Source column containing p-values to adjust
+    stat_test_method: Optional[str] = None  # Method name (e.g., "fdr_bh", "bonferroni")
+    stat_test_alpha: Optional[float] = None  # Significance level (default 0.05)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -66,7 +75,10 @@ class ColumnDefinition:
             "default_value": self.default_value,
             "validation_regex": self.validation_regex,
             "min_value": self.min_value,
-            "max_value": self.max_value
+            "max_value": self.max_value,
+            "stat_test_source_column": self.stat_test_source_column,
+            "stat_test_method": self.stat_test_method,
+            "stat_test_alpha": self.stat_test_alpha
         }
     
     @classmethod
@@ -82,7 +94,10 @@ class ColumnDefinition:
             default_value=data.get("default_value"),
             validation_regex=data.get("validation_regex"),
             min_value=data.get("min_value"),
-            max_value=data.get("max_value")
+            max_value=data.get("max_value"),
+            stat_test_source_column=data.get("stat_test_source_column"),
+            stat_test_method=data.get("stat_test_method"),
+            stat_test_alpha=data.get("stat_test_alpha")
         )
 
 
@@ -516,8 +531,16 @@ class SchemaManager:
                 source_col = column_mapping[col_def.name]
                 series = df[source_col].copy()
                 
-                # Apply transformation
-                series = self._apply_transform(series, col_def.transform)
+                # Check if this is a statistical test transform
+                if col_def.transform in (TransformType.FDR_BENJAMINI_HOCHBERG, 
+                                        TransformType.FDR_BENJAMINI_YEKUTIELI,
+                                        TransformType.BONFERRONI,
+                                        TransformType.HOLM_BONFERRONI):
+                    # Apply statistical test transformation
+                    series = self._apply_statistical_test(df, col_def, column_mapping)
+                else:
+                    # Apply regular transformation
+                    series = self._apply_transform(series, col_def.transform)
                 
                 # Convert type
                 series = self._convert_type(series, col_def.type)
@@ -531,6 +554,101 @@ class SchemaManager:
                     result[col_def.name] = np.nan
         
         return result
+    
+    def _apply_statistical_test(
+        self,
+        df: pd.DataFrame,
+        col_def: ColumnDefinition,
+        column_mapping: Dict[str, str]
+    ) -> pd.Series:
+        """
+        Apply a statistical test transformation (FDR, Bonferroni, etc.).
+        
+        Args:
+            df: Input DataFrame
+            col_def: Column definition with statistical test parameters
+            column_mapping: Column mapping dictionary
+            
+        Returns:
+            Series with adjusted p-values
+        """
+        try:
+            # Get source column for p-values
+            source_col = col_def.stat_test_source_column
+            if not source_col or source_col not in df.columns:
+                # Try to find it in column mapping or by name
+                if source_col in column_mapping.values():
+                    # Find the key that maps to this value
+                    for key, val in column_mapping.items():
+                        if val == source_col:
+                            source_col = val
+                            break
+                else:
+                    # Try to find column by name pattern
+                    pvalue_patterns = [r"p[-_]?val", r"pvalue", r"significance"]
+                    import re
+                    for col in df.columns:
+                        col_lower = col.lower()
+                        for pattern in pvalue_patterns:
+                            if re.search(pattern, col_lower):
+                                source_col = col
+                                break
+                        if source_col and source_col in df.columns:
+                            break
+                
+                if not source_col or source_col not in df.columns:
+                    # Return NaN series if source column not found
+                    return pd.Series([np.nan] * len(df), index=df.index)
+            
+            # Get p-values from source column
+            pvalues = pd.to_numeric(df[source_col], errors='coerce')
+            
+            # Remove NaN values for the test
+            valid_mask = pvalues.notna()
+            if not valid_mask.any():
+                return pd.Series([np.nan] * len(df), index=df.index)
+            
+            # Validate p-values are in [0, 1] range
+            valid_pvalues = pvalues[valid_mask]
+            if (valid_pvalues < 0).any() or (valid_pvalues > 1).any():
+                # Clamp to [0, 1] range
+                valid_pvalues = valid_pvalues.clip(0.0, 1.0)
+            
+            # Determine method based on transform type
+            method_map = {
+                TransformType.FDR_BENJAMINI_HOCHBERG: 'fdr_bh',
+                TransformType.FDR_BENJAMINI_YEKUTIELI: 'fdr_by',
+                TransformType.BONFERRONI: 'bonferroni',
+                TransformType.HOLM_BONFERRONI: 'holm'
+            }
+            method = method_map.get(col_def.transform, 'fdr_bh')
+            
+            # Get alpha value
+            alpha = col_def.stat_test_alpha if col_def.stat_test_alpha is not None else 0.05
+            
+            # Apply multiple testing correction
+            try:
+                from statsmodels.stats.multitest import multipletests
+                adjusted_pvalues, _, _, _ = multipletests(
+                    valid_pvalues.values,
+                    alpha=alpha,
+                    method=method
+                )
+            except ImportError:
+                # Fallback if statsmodels not available
+                raise ImportError("statsmodels is required for statistical test transformations. Install with: pip install statsmodels")
+            
+            # Create result series with same index as original
+            result = pd.Series([np.nan] * len(df), index=df.index, dtype=float)
+            result[valid_mask] = adjusted_pvalues
+            
+            return result
+            
+        except Exception as e:
+            # Return NaN series on error
+            import warnings
+            warnings.warn(f"Statistical test transformation failed for {col_def.name}: {str(e)}")
+            return pd.Series([np.nan] * len(df), index=df.index)
     
     def _apply_transform(
         self,

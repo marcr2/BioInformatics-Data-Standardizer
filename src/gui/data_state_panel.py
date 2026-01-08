@@ -6,6 +6,7 @@ Shows the state of data at the last checkpoint.
 
 import dearpygui.dearpygui as dpg
 from typing import Optional, Dict, Any
+from pathlib import Path
 import pandas as pd
 from ..utils.checkpoint_manager import CheckpointManager
 
@@ -20,14 +21,16 @@ class DataStatePanel:
     - Allow navigation between checkpoints
     """
     
-    def __init__(self, checkpoint_manager: Optional[CheckpointManager] = None):
+    def __init__(self, checkpoint_manager: Optional[CheckpointManager] = None, main_app=None):
         """
         Initialize data state panel.
         
         Args:
             checkpoint_manager: Checkpoint manager instance
+            main_app: Reference to main app for accessing final dataset dialog
         """
         self.checkpoint_manager = checkpoint_manager
+        self.main_app = main_app
         self.current_checkpoint: Optional[Dict[str, Any]] = None
         
         # UI tags
@@ -52,6 +55,18 @@ class DataStatePanel:
                 label="Load Latest",
                 callback=self._load_latest,
                 width=100
+            )
+            dpg.add_spacer(width=10)
+            dpg.add_button(
+                label="Export",
+                callback=self._show_export_dialog,
+                width=100
+            )
+            dpg.add_spacer(width=10)
+            dpg.add_button(
+                label="View Final Dataset",
+                callback=self._view_final_dataset,
+                width=130
             )
         
         dpg.add_spacer(height=10)
@@ -224,4 +239,157 @@ class DataStatePanel:
                     f"... and {len(df) - preview_rows} more rows",
                     color=(149, 165, 166)
                 )
+    
+    def _show_export_dialog(self) -> None:
+        """Show the export file dialog."""
+        if not self.current_checkpoint:
+            self._show_error("No checkpoint loaded")
+            return
+        
+        df = self.current_checkpoint.get("dataframe")
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            self._show_error("No data to export")
+            return
+        
+        # Ensure exports directory exists
+        exports_dir = Path("exports")
+        exports_dir.mkdir(exist_ok=True)
+        
+        # Create save dialog
+        export_dialog_tag = "data_state_export_dialog"
+        if dpg.does_item_exist(export_dialog_tag):
+            dpg.delete_item(export_dialog_tag)
+        
+        with dpg.file_dialog(
+            directory_selector=False,
+            show=True,
+            callback=self._on_export_dialog_ok,
+            cancel_callback=lambda s, a: dpg.delete_item(export_dialog_tag),
+            width=700,
+            height=400,
+            modal=True,
+            tag=export_dialog_tag,
+            default_filename="data_state_export.csv",
+            default_path=str(exports_dir.absolute())
+        ):
+            dpg.add_file_extension(".*", color=(255, 255, 255))
+            dpg.add_file_extension(".csv", color=(0, 255, 0))
+            dpg.add_file_extension(".tsv", color=(0, 255, 0))
+            dpg.add_file_extension(".xlsx", color=(0, 200, 255))
+            dpg.add_file_extension(".parquet", color=(255, 200, 0))
+            dpg.add_file_extension(".json", color=(200, 200, 255))
+    
+    def _on_export_dialog_ok(self, sender, app_data) -> None:
+        """Handle export dialog OK."""
+        file_path = app_data.get("file_path_name", "")
+        
+        if not file_path:
+            return
+        
+        self._export_to_file(file_path)
+        dpg.delete_item("data_state_export_dialog")
+    
+    def _export_to_file(self, file_path: str) -> None:
+        """Export DataFrame to file."""
+        if not self.current_checkpoint:
+            return
+        
+        df = self.current_checkpoint.get("dataframe")
+        if df is None or not isinstance(df, pd.DataFrame):
+            return
+        
+        try:
+            # Ensure exports directory exists
+            exports_dir = Path("exports")
+            exports_dir.mkdir(exist_ok=True)
+            
+            path = Path(file_path)
+            # If path is not in exports directory, move it there
+            if "exports" not in str(path.parent).replace("\\", "/"):
+                path = exports_dir / path.name
+            
+            suffix = path.suffix.lower()
+            
+            if suffix == ".csv":
+                df.to_csv(path, index=False)
+            elif suffix == ".tsv":
+                df.to_csv(path, sep='\t', index=False)
+            elif suffix == ".xlsx":
+                df.to_excel(path, index=False, engine='openpyxl')
+            elif suffix == ".parquet":
+                df.to_parquet(path, index=False)
+            elif suffix == ".json":
+                df.to_json(path, orient='records', indent=2)
+            else:
+                # Default to CSV
+                df.to_csv(path, index=False)
+            
+            self._show_success(f"Exported to {path.name}")
+            
+        except Exception as e:
+            self._show_error(f"Export failed: {str(e)}")
+    
+    def _show_error(self, message: str) -> None:
+        """Show error popup."""
+        popup_tag = "data_state_error_popup"
+        if dpg.does_item_exist(popup_tag):
+            dpg.delete_item(popup_tag)
+        
+        with dpg.window(
+            label="Error",
+            modal=True,
+            width=300,
+            height=100,
+            pos=[550, 400],
+            on_close=lambda: dpg.delete_item(popup_tag)
+        ) as popup:
+            dpg.set_item_alias(popup, popup_tag)
+            dpg.add_text(message, wrap=-1, color=(231, 76, 60))
+            dpg.add_spacer(height=10)
+            dpg.add_button(
+                label="OK",
+                callback=lambda: dpg.delete_item(popup_tag),
+                width=-1
+            )
+    
+    def _view_final_dataset(self) -> None:
+        """Open the final dataset dialog."""
+        if not self.main_app:
+            self._show_error("Main app reference not available")
+            return
+        
+        # Check if final dataset exists
+        if self.main_app.final_dataset is not None:
+            self.main_app.show_final_dataset_dialog()
+        elif (hasattr(self.main_app, 'process_panel') and 
+              self.main_app.process_panel and 
+              self.main_app.process_panel.final_dataset is not None):
+            # Get from process panel
+            self.main_app.final_dataset = self.main_app.process_panel.final_dataset.copy()
+            self.main_app.show_final_dataset_dialog()
+        else:
+            self._show_error("No final dataset available. Please run processing first.")
+    
+    def _show_success(self, message: str) -> None:
+        """Show success popup."""
+        popup_tag = "data_state_success_popup"
+        if dpg.does_item_exist(popup_tag):
+            dpg.delete_item(popup_tag)
+        
+        with dpg.window(
+            label="Success",
+            modal=True,
+            width=300,
+            height=100,
+            pos=[550, 400],
+            on_close=lambda: dpg.delete_item(popup_tag)
+        ) as popup:
+            dpg.set_item_alias(popup, popup_tag)
+            dpg.add_text(message, wrap=-1, color=(46, 204, 113))
+            dpg.add_spacer(height=10)
+            dpg.add_button(
+                label="OK",
+                callback=lambda: dpg.delete_item(popup_tag),
+                width=-1
+            )
 

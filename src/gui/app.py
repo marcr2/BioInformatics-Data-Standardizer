@@ -68,6 +68,7 @@ class BIDSApp:
         self.current_df = None
         self.current_schema = None
         self.processing = False
+        self.final_dataset: Optional[pd.DataFrame] = None
         
         # Thread-safe UI update queue
         self.ui_update_queue = queue.Queue()
@@ -81,6 +82,10 @@ class BIDSApp:
         self.agent_monitor_panel: Optional[AgentMonitorPanel] = None
         self.cycle_viz_panel: Optional[CycleVisualizationPanel] = None
         self.data_state_panel: Optional[DataStatePanel] = None
+        
+        # Final dataset dialog
+        from .final_dataset_dialog import FinalDatasetDialog
+        self.final_dataset_dialog = FinalDatasetDialog()
         
         # Checkpoint manager (shared)
         from ..utils.checkpoint_manager import CheckpointManager
@@ -313,7 +318,8 @@ class BIDSApp:
                             # Schema tab
                             with dpg.tab(label="Schema Editor"):
                                 self.schema_editor = SchemaEditor(
-                                    on_schema_changed=self._on_schema_changed
+                                    on_schema_changed=self._on_schema_changed,
+                                    get_available_columns=lambda: list(self.current_df.columns) if self.current_df is not None else []
                                 )
                                 self.schema_editor.create()
                             
@@ -354,7 +360,8 @@ class BIDSApp:
                             # Data State tab - Last checkpoint data
                             with dpg.tab(label="Data State"):
                                 self.data_state_panel = DataStatePanel(
-                                    checkpoint_manager=self.checkpoint_manager
+                                    checkpoint_manager=self.checkpoint_manager,
+                                    main_app=self
                                 )
                                 self.data_state_panel.create()
             
@@ -521,12 +528,28 @@ class BIDSApp:
         dpg.set_value(self.progress_bar, 1.0)
         dpg.configure_item(self.progress_bar, overlay="Complete")
         
+        # Store final dataset
+        if result.get("final_df") is not None:
+            self.final_dataset = result["final_df"].copy()
+        
         if result.get("success"):
             dpg.set_value(self.status_text, "Processing complete - Success!")
             if result.get("final_df") is not None:
                 self.results_panel.show_dataframe(result["final_df"])
+                # Show final dataset dialog
+                self.show_final_dataset_dialog()
         else:
             dpg.set_value(self.status_text, "Processing complete - Issues remain")
+    
+    def show_final_dataset_dialog(self) -> None:
+        """Show the final dataset dialog."""
+        if self.final_dataset is not None:
+            self.final_dataset_dialog.show(self.final_dataset)
+        else:
+            # Try to get from process panel
+            if self.process_panel and self.process_panel.final_dataset is not None:
+                self.final_dataset = self.process_panel.final_dataset.copy()
+                self.final_dataset_dialog.show(self.final_dataset)
     
     def _on_diagnose_click(self) -> None:
         """Handle diagnose button click - updates both main status and processing tab."""

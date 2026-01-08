@@ -187,6 +187,10 @@ class ResultsPanel:
             self._show_error("No data to export")
             return
         
+        # Ensure exports directory exists
+        exports_dir = Path("exports")
+        exports_dir.mkdir(exist_ok=True)
+        
         format_value = dpg.get_value(self.export_format_tag)
         extension = {
             "CSV": "csv",
@@ -206,7 +210,8 @@ class ResultsPanel:
             height=400,
             modal=True,
             tag="export_dialog",
-            default_filename=f"bids_output.{extension}"
+            default_filename=f"bids_output.{extension}",
+            default_path=str(exports_dir.absolute())
         ):
             dpg.add_file_extension(f".{extension}", color=(0, 255, 0))
     
@@ -226,7 +231,15 @@ class ResultsPanel:
             return
         
         try:
+            # Ensure exports directory exists
+            exports_dir = Path("exports")
+            exports_dir.mkdir(exist_ok=True)
+            
             path = Path(file_path)
+            # If path is not in exports directory, move it there
+            if "exports" not in str(path.parent).replace("\\", "/"):
+                path = exports_dir / path.name
+            
             suffix = path.suffix.lower()
             
             if suffix == ".csv":

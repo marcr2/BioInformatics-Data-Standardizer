@@ -57,6 +57,7 @@ except ImportError:
         GENERATING = "generating"
         EXECUTING = "executing"
         REVIEWING = "reviewing"
+        FIXING = "fixing"
         COMPLETE = "complete"
         ERROR = "error"
     

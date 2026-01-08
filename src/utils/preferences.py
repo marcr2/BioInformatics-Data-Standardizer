@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
-import torch
 
 
 class PreferencesManager:
@@ -107,8 +106,9 @@ class PreferencesManager:
     def _check_gpu_available(self) -> bool:
         """Check if GPU is available."""
         try:
+            import torch
             return torch.cuda.is_available()
-        except Exception:
+        except (ImportError, Exception):
             return False
     
     def is_gpu_enabled(self) -> bool:
@@ -129,11 +129,12 @@ class PreferencesManager:
         }
         
         try:
+            import torch
             if torch.cuda.is_available():
                 info["available"] = True
                 info["device_name"] = torch.cuda.get_device_name(0)
                 info["memory_gb"] = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        except Exception:
+        except (ImportError, Exception):
             pass
         
         return info

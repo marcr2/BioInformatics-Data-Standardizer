@@ -15,13 +15,9 @@ from datetime import datetime
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
-import torch
-from transformers import (
-    AutoTokenizer, 
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-    pipeline
-)
+
+# Lazy imports - torch and transformers are only imported when LocalLLMClient is instantiated
+# This allows the application to run without PyTorch installed (rules-based mode only)
 
 from .logger import get_logger, debug, info, warning
 
@@ -77,7 +73,7 @@ class LocalLLMClient(BaseLLMClient):
         use_quantization: bool = True,
         device_map: str = "auto",
         max_length: int = 4096,
-        torch_dtype: Optional[torch.dtype] = None
+        torch_dtype: Optional[Any] = None
     ):
         """
         Initialize local LLM client.
@@ -89,6 +85,22 @@ class LocalLLMClient(BaseLLMClient):
             max_length: Maximum context length
             torch_dtype: Torch dtype (default: float16 for GPU, float32 for CPU)
         """
+        # Lazy import torch and transformers - only when LLM is actually used
+        try:
+            import torch
+            from transformers import (
+                AutoTokenizer, 
+                AutoModelForCausalLM,
+                BitsAndBytesConfig,
+                pipeline
+            )
+        except ImportError as e:
+            raise ImportError(
+                "LLM dependencies not installed. Please install them using:\n"
+                "  pip install torch transformers accelerate bitsandbytes\n"
+                "Or run the installer and choose to install LLM support."
+            ) from e
+        
         self.device_map = device_map
         self.max_length = max_length
         

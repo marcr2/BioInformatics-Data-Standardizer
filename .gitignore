@@ -34,6 +34,8 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+# Pip output logs (version number files from failed redirects)
+[0-9]*\.[0-9]*\.[0-9]*
 
 # Unit test / coverage reports
 htmlcov/

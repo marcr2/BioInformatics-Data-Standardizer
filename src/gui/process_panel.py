@@ -75,6 +75,9 @@ class ProcessPanel:
         # Store last diagnosis result for reuse
         self.last_diagnosis = None
         
+        # Store final dataset after processing
+        self.final_dataset: Optional[pd.DataFrame] = None
+        
         # UI tags
         self.log_text_tag: Optional[int] = None
         self.issues_text_tag: Optional[int] = None  # Copy-pastable issues text
@@ -1039,6 +1042,13 @@ class ProcessPanel:
             
             # Get final result
             final_df = process_result.get("final_df")
+            
+            # Store final dataset
+            if final_df is not None:
+                self.final_dataset = final_df.copy()
+                if self.main_app:
+                    self.main_app.final_dataset = final_df.copy()
+            
             if process_result.get("success"):
                 self._log("Processing successful!")
                 self._update_status("Success", 1.0)
@@ -1086,6 +1096,7 @@ class ProcessPanel:
                     dpg.set_value(self.main_app.status_text, "Processing complete - Success!")
                     dpg.set_value(self.main_app.progress_bar, 1.0)
                     dpg.configure_item(self.main_app.progress_bar, overlay="Complete")
+                    # Dialog will be shown via _on_process_complete callback
             else:
                 self._log("Processing completed with issues remaining")
                 self._update_status("Completed with issues", 1.0)
