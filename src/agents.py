@@ -1447,18 +1447,47 @@ class AgentOrchestrator:
                     AgentPhase.ANALYZING
                 )
         
-        # Phase 2: Optional LLM-Rewrite step (structural reorganization only)
-        # Check if llm_rewrite is enabled in preferences
+        # Check processing mode and LLM availability
         try:
             from .utils.preferences import get_preferences
+            from .utils.llm_check import is_llm_available
             prefs = get_preferences()
-            llm_rewrite_enabled = prefs.get("llm_rewrite_enabled", False)
+            processing_mode = prefs.get_processing_mode()
+            llm_available = is_llm_available()
+            should_use_llm = prefs.should_use_llm()
         except Exception:
-            llm_rewrite_enabled = False
+            processing_mode = "auto"
+            llm_available = False
+            should_use_llm = False
+        
+        # If LLM is required but not available, raise error
+        if processing_mode == "llm_required" and not llm_available:
+            error_msg = "LLM is required but not installed. Please install LLM support from Preferences."
+            if MONITOR_AVAILABLE:
+                notify_thought(
+                    f"Error: {error_msg}",
+                    AgentPhase.ERROR
+                )
+            return {
+                "error": error_msg,
+                "original_shape": df.shape,
+                "schema": schema_name,
+                "preprocessing": results["preprocessing"],
+                "success": False
+            }
+        
+        # Phase 2: Optional LLM-Rewrite step (structural reorganization only)
+        # Check if llm_rewrite is enabled in preferences (only if LLM is available)
+        llm_rewrite_enabled = False
+        if should_use_llm:
+            try:
+                llm_rewrite_enabled = prefs.get("llm_rewrite_enabled", False)
+            except Exception:
+                llm_rewrite_enabled = False
         
         results["llm_rewrite"] = None
         
-        if llm_rewrite_enabled:
+        if llm_rewrite_enabled and should_use_llm:
             if MONITOR_AVAILABLE:
                 notify_phase(AgentPhase.ANALYZING)
                 notify_progress(0.15)
@@ -1528,8 +1557,32 @@ class AgentOrchestrator:
                     AgentPhase.ANALYZING
                 )
         
-        # Phase 3: Load LLM for remaining complex issues
-        self._ensure_llm_loaded()
+        # Phase 3: Load LLM for remaining complex issues (only if should use LLM)
+        if should_use_llm:
+            try:
+                self._ensure_llm_loaded()
+            except Exception as e:
+                # If LLM loading fails and we're in auto mode, fall back to rules-only
+                if processing_mode == "auto":
+                    warning(f"LLM loading failed, falling back to rules-only mode: {e}", context="Pipeline")
+                    should_use_llm = False
+                    if MONITOR_AVAILABLE:
+                        notify_thought(
+                            f"LLM loading failed: {str(e)}\n"
+                            "Falling back to rules-based processing only.",
+                            AgentPhase.ANALYZING
+                        )
+                else:
+                    # In llm_required mode, we already checked above, so this shouldn't happen
+                    raise
+        else:
+            if MONITOR_AVAILABLE:
+                mode_name = "rules-only" if processing_mode == "rules_only" else "auto (LLM not available)"
+                notify_thought(
+                    f"Processing in {mode_name} mode.\n"
+                    "Skipping LLM-based diagnosis and fixing.",
+                    AgentPhase.ANALYZING
+                )
         
         # Transform dataframe to match schema structure before diagnostic agent
         # This ensures the diagnostic agent sees the data in its final form
@@ -1566,8 +1619,27 @@ class AgentOrchestrator:
                 metadata={"action": "before_diagnosis", "stage": "pre_diagnosis"}
             )
         
-        # Phase 3: Agentic diagnosis (or use existing diagnosis if provided)
-        if existing_diagnosis is not None:
+        # Phase 4: Agentic diagnosis (or use existing diagnosis if provided)
+        # Skip if not using LLM
+        if not should_use_llm:
+            # In rules-only mode, create a simple diagnosis from preprocessing results
+            # DiagnosisResult is defined in this file
+            diagnosis = DiagnosisResult(
+                is_valid=preprocessing_result.is_valid,
+                quality_score=1.0 if preprocessing_result.is_valid else 0.5,
+                issues=preprocessing_result.issues_remaining,
+                summary="Rules-based preprocessing completed. " + 
+                       ("All issues resolved." if preprocessing_result.is_valid 
+                        else f"{len(preprocessing_result.issues_remaining)} issues remain (LLM required for complex fixes).")
+            )
+            if MONITOR_AVAILABLE:
+                notify_thought(
+                    "Rules-based processing complete.\n"
+                    f"  Valid: {diagnosis.is_valid}\n"
+                    f"  Remaining issues: {len(diagnosis.issues)}",
+                    AgentPhase.DIAGNOSING
+                )
+        elif existing_diagnosis is not None:
             # Use the provided existing diagnosis
             diagnosis = existing_diagnosis
             info("Using existing diagnosis result (skipping re-diagnosis)", context="Pipeline")
@@ -1655,6 +1727,22 @@ class AgentOrchestrator:
         
         if not auto_fix:
             info("Auto-fix disabled, returning diagnosis results only", context="Pipeline")
+            return results
+        
+        # Skip fix loop if LLM is not available
+        if not should_use_llm:
+            info("LLM not available - skipping fix loop. Remaining issues require LLM support.", context="Pipeline")
+            if MONITOR_AVAILABLE:
+                notify_thought(
+                    "Fix loop skipped: LLM required for complex fixes.\n"
+                    f"  Remaining issues: {len(diagnosis.issues)}\n"
+                    "  Install LLM support to enable automatic fixing.",
+                    AgentPhase.FIXING
+                )
+            # Return preprocessed data as final result
+            transformed_df = self.schema_manager.transform_dataframe(current_df, schema)
+            results["final_df"] = transformed_df
+            results["success"] = diagnosis.is_valid  # Success only if preprocessing resolved all issues
             return results
         
         # Phase 5: Agentic fix loop

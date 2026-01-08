@@ -20,6 +20,8 @@ class PreferencesManager:
         "auto_fix": True,
         "default_schema": "IPA Standard",
         "llm_rewrite_enabled": False,  # Optional LLM-rewrite step (structural reorganization only)
+        "processing_mode": "auto",  # "auto" (use LLM if available), "rules_only" (never use LLM), "llm_required" (require LLM)
+        "llm_installed": False,  # Track if LLM dependencies are installed (updated on check)
         "map_canvas_width": None,  # Auto-detect if None
         "map_canvas_height": None,  # Auto-detect if None
         "map_auto_fit": True,  # Auto-fit map to screen on startup
@@ -68,6 +70,12 @@ class PreferencesManager:
             self._prefs = self.DEFAULT_PREFS.copy()
             # Auto-detect GPU and set preference
             self._prefs["gpu_acceleration"] = self._check_gpu_available()
+            # Check LLM availability
+            try:
+                from .llm_check import is_llm_available
+                self._prefs["llm_installed"] = is_llm_available()
+            except Exception:
+                self._prefs["llm_installed"] = False
             self.save()
     
     def save(self) -> None:
@@ -305,6 +313,60 @@ class PreferencesManager:
             result["available_memory_gb"] = None
         
         return result
+    
+    def is_llm_available(self) -> bool:
+        """
+        Check if LLM is available (installed and can be used).
+        
+        Returns:
+            True if LLM is available, False otherwise
+        """
+        try:
+            from .llm_check import is_llm_available
+            available = is_llm_available()
+            # Update the preference to reflect current status
+            self.set("llm_installed", available)
+            return available
+        except Exception:
+            self.set("llm_installed", False)
+            return False
+    
+    def get_processing_mode(self) -> str:
+        """
+        Get the current processing mode.
+        
+        Returns:
+            Processing mode: "auto", "rules_only", or "llm_required"
+        """
+        return self.get("processing_mode", "auto")
+    
+    def set_processing_mode(self, mode: str) -> None:
+        """
+        Set the processing mode.
+        
+        Args:
+            mode: Processing mode ("auto", "rules_only", or "llm_required")
+        """
+        if mode not in ["auto", "rules_only", "llm_required"]:
+            raise ValueError(f"Invalid processing mode: {mode}")
+        self.set("processing_mode", mode)
+    
+    def should_use_llm(self) -> bool:
+        """
+        Determine if LLM should be used based on processing mode and availability.
+        
+        Returns:
+            True if LLM should be used, False otherwise
+        """
+        mode = self.get_processing_mode()
+        llm_available = self.is_llm_available()
+        
+        if mode == "rules_only":
+            return False
+        elif mode == "llm_required":
+            return llm_available  # Will raise error in orchestrator if False
+        else:  # "auto"
+            return llm_available
 
 
 # Global preferences instance

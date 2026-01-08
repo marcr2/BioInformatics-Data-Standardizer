@@ -891,9 +891,30 @@ class ProcessPanel:
             
             # Get preferences
             from ..utils.preferences import get_preferences
+            from ..utils.llm_check import is_llm_available
             prefs = get_preferences()
             auto_fix = prefs.get("auto_fix", True)
             max_attempts = prefs.get("max_fix_attempts", 3)
+            processing_mode = prefs.get_processing_mode()
+            llm_available = is_llm_available()
+            
+            # Log processing mode
+            mode_names = {
+                "auto": "Auto (use LLM if available)",
+                "rules_only": "Rules-based only (no LLM)",
+                "llm_required": "LLM required"
+            }
+            self._log(f"Processing mode: {mode_names.get(processing_mode, processing_mode)}")
+            if processing_mode == "rules_only":
+                self._log("Running in rules-based mode - LLM features disabled")
+            elif not llm_available:
+                if processing_mode == "llm_required":
+                    self._log("ERROR: LLM required but not installed. Please install LLM support from Preferences.")
+                    self._update_status("Error: LLM required but not available", 0.0)
+                    self.is_processing = False
+                    return
+                else:
+                    self._log("LLM not available - running in rules-based mode")
             
             # Check if we should use previous diagnosis
             use_prev_diagnosis = (
@@ -923,15 +944,36 @@ class ProcessPanel:
             # Run orchestrator with preferences
             # Note: The orchestrator now handles preprocessing internally and creates checkpoints at each stage
             self._log("Running orchestrated pipeline (preprocess -> diagnose -> fix)...")
-            process_result = self.orchestrator.process(
-                df,
-                schema_name=schema.name if hasattr(schema, 'name') else "IPA Standard",
-                auto_fix=auto_fix,
-                max_attempts=max_attempts,
-                existing_diagnosis=self.last_diagnosis if use_prev_diagnosis else None,
-                diagnosis_context=diagnosis_context,
-                fixing_context=fixing_context
-            )
+            try:
+                process_result = self.orchestrator.process(
+                    df,
+                    schema_name=schema.name if hasattr(schema, 'name') else "IPA Standard",
+                    auto_fix=auto_fix,
+                    max_attempts=max_attempts,
+                    existing_diagnosis=self.last_diagnosis if use_prev_diagnosis else None,
+                    diagnosis_context=diagnosis_context,
+                    fixing_context=fixing_context
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if "LLM is required" in error_msg or "LLM required" in error_msg:
+                    self._log(f"ERROR: {error_msg}")
+                    self._log("Please install LLM support from Preferences -> Install LLM")
+                    self._update_status("Error: LLM required but not available", 0.0)
+                    self.is_processing = False
+                    return
+                else:
+                    raise
+            
+            # Check for error in result
+            if "error" in process_result:
+                error_msg = process_result["error"]
+                if "LLM is required" in error_msg or "LLM required" in error_msg:
+                    self._log(f"ERROR: {error_msg}")
+                    self._log("Please install LLM support from Preferences -> Install LLM")
+                    self._update_status("Error: LLM required but not available", 0.0)
+                    self.is_processing = False
+                    return
             
             # Log preprocessing results if available
             preprocessing = process_result.get("preprocessing", {})
@@ -945,7 +987,10 @@ class ProcessPanel:
                     if len(changes) > 5:
                         self._log(f"  ... and {len(changes) - 5} more")
                 if remaining > 0:
-                    self._log(f"Preprocessing: {remaining} issue(s) remain for LLM")
+                    if llm_available and processing_mode != "rules_only":
+                        self._log(f"Preprocessing: {remaining} issue(s) remain for LLM")
+                    else:
+                        self._log(f"Preprocessing: {remaining} issue(s) remain (LLM required for complex fixes)")
                 else:
                     self._log("Preprocessing resolved all issues!")
             

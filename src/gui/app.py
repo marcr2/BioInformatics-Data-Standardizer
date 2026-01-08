@@ -712,8 +712,57 @@ class BIDSApp:
             dpg.add_separator()
             dpg.add_spacer(height=10)
             
-            # LLM Token Settings
-            dpg.add_text("LLM Token Settings", color=self.COLORS["text_dim"])
+            # Processing Mode Settings
+            from ..utils.llm_check import is_llm_available
+            llm_available = is_llm_available()
+            prefs.set("llm_installed", llm_available)
+            
+            dpg.add_text("Processing Mode", color=self.COLORS["text_dim"])
+            dpg.add_spacer(height=5)
+            
+            # LLM Status
+            if llm_available:
+                llm_status_text = "LLM Support: Available"
+                llm_status_color = self.COLORS["success"]
+            else:
+                llm_status_text = "LLM Support: Not installed"
+                llm_status_color = self.COLORS["warning"]
+            
+            dpg.add_text(llm_status_text, color=llm_status_color)
+            dpg.add_spacer(height=5)
+            
+            # Processing mode radio buttons
+            current_mode = prefs.get_processing_mode()
+            dpg.add_radio_button(
+                items=["Auto (use LLM if available)", "Rules-based only (no LLM)", "LLM required"],
+                default_value=0 if current_mode == "auto" else (1 if current_mode == "rules_only" else 2),
+                callback=self._on_processing_mode_changed,
+                tag="processing_mode_radio"
+            )
+            
+            dpg.add_spacer(height=5)
+            
+            # Install LLM button (only show if not installed)
+            if not llm_available:
+                dpg.add_button(
+                    label="Install LLM Support",
+                    callback=self._on_install_llm_clicked,
+                    tag="install_llm_button"
+                )
+                dpg.add_text(
+                    "Click to install LLM dependencies (~8-16GB download).\n"
+                    "This may take several minutes.",
+                    color=(149, 165, 166),
+                    wrap=-1
+                )
+            
+            dpg.add_spacer(height=10)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # LLM Token Settings (only show if LLM is available)
+            if llm_available:
+                dpg.add_text("LLM Token Settings", color=self.COLORS["text_dim"])
             dpg.add_spacer(height=5)
             
             token_info = prefs.get_max_tokens_info()
@@ -771,32 +820,42 @@ class BIDSApp:
                     color=self.COLORS["warning"]
                 )
             
-            dpg.add_spacer(height=10)
-            dpg.add_separator()
-            dpg.add_spacer(height=10)
+                dpg.add_spacer(height=10)
+                dpg.add_separator()
+                dpg.add_spacer(height=10)
             
-            # LLM-Rewrite Settings
-            dpg.add_text("LLM-Rewrite Step", color=self.COLORS["text_dim"])
-            dpg.add_spacer(height=5)
-            
-            dpg.add_text(
-                "Optional step that uses LLM to reorganize data structure to match schema.",
-                color=(149, 165, 166),
-                wrap=-1
-            )
-            dpg.add_text(
-                "Only affects column names/organization - data values are NOT modified.",
-                color=(149, 165, 166),
-                wrap=-1
-            )
-            dpg.add_spacer(height=5)
-            
-            llm_rewrite_enabled = prefs.get("llm_rewrite_enabled", False)
-            dpg.add_checkbox(
-                label="Enable LLM-Rewrite Step (structural reorganization only)",
-                default_value=llm_rewrite_enabled,
-                callback=self._on_llm_rewrite_toggle_changed
-            )
+            # LLM-Rewrite Settings (only show if LLM is available)
+            if llm_available:
+                dpg.add_text("LLM-Rewrite Step", color=self.COLORS["text_dim"])
+                dpg.add_spacer(height=5)
+                
+                dpg.add_text(
+                    "Optional step that uses LLM to reorganize data structure to match schema.",
+                    color=(149, 165, 166),
+                    wrap=-1
+                )
+                dpg.add_text(
+                    "Only affects column names/organization - data values are NOT modified.",
+                    color=(149, 165, 166),
+                    wrap=-1
+                )
+                dpg.add_spacer(height=5)
+                
+                llm_rewrite_enabled = prefs.get("llm_rewrite_enabled", False)
+                dpg.add_checkbox(
+                    label="Enable LLM-Rewrite Step (structural reorganization only)",
+                    default_value=llm_rewrite_enabled,
+                    callback=self._on_llm_rewrite_toggle_changed
+                )
+            else:
+                # Show disabled message if LLM not available
+                dpg.add_text("LLM-Rewrite Step", color=self.COLORS["text_dim"])
+                dpg.add_spacer(height=5)
+                dpg.add_text(
+                    "LLM support is not installed. Install LLM support to enable this feature.",
+                    color=self.COLORS["warning"],
+                    wrap=-1
+                )
             
             dpg.add_spacer(height=10)
             dpg.add_separator()
@@ -1015,6 +1074,84 @@ class BIDSApp:
             dpg.set_value(self.status_text, "LLM-Rewrite step enabled (structural reorganization only)")
         else:
             dpg.set_value(self.status_text, "LLM-Rewrite step disabled")
+    
+    def _on_processing_mode_changed(self, sender, app_data) -> None:
+        """Handle processing mode radio button change."""
+        from ..utils.preferences import get_preferences
+        prefs = get_preferences()
+        
+        # Map radio button index to mode
+        mode_map = {0: "auto", 1: "rules_only", 2: "llm_required"}
+        mode = mode_map.get(app_data, "auto")
+        prefs.set_processing_mode(mode)
+        
+        # Show message
+        mode_names = {
+            "auto": "Auto (use LLM if available)",
+            "rules_only": "Rules-based only (no LLM)",
+            "llm_required": "LLM required"
+        }
+        dpg.set_value(self.status_text, f"Processing mode set to: {mode_names.get(mode, mode)}")
+    
+    def _on_install_llm_clicked(self, sender, app_data) -> None:
+        """Handle Install LLM button click."""
+        import threading
+        from ..utils.llm_installer import install_llm_dependencies
+        from ..utils.preferences import get_preferences
+        from ..utils.llm_check import is_llm_available
+        
+        # Disable button during installation
+        if dpg.does_item_exist("install_llm_button"):
+            dpg.configure_item("install_llm_button", enabled=False)
+        
+        dpg.set_value(self.status_text, "Installing LLM dependencies... This may take several minutes.")
+        
+        def install_thread():
+            """Run installation in background thread."""
+            try:
+                # Find venv path
+                venv_path = None
+                import sys
+                from pathlib import Path
+                if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+                    # We're in a virtual environment
+                    venv_path = Path(sys.prefix)
+                
+                def progress_callback(msg: str):
+                    """Update status with progress messages."""
+                    dpg.set_value(self.status_text, f"Installing LLM: {msg}")
+                
+                result = install_llm_dependencies(
+                    venv_path=venv_path,
+                    progress_callback=progress_callback
+                )
+                
+                # Update preferences
+                prefs = get_preferences()
+                prefs.set("llm_installed", result["success"])
+                
+                if result["success"]:
+                    dpg.set_value(self.status_text, "LLM installation complete! Please restart the application.")
+                    # Hide install button and refresh preferences dialog
+                    if dpg.does_item_exist("install_llm_button"):
+                        dpg.delete_item("install_llm_button")
+                    # Close and reopen preferences to refresh
+                    if dpg.does_item_exist("preferences_dialog"):
+                        dpg.delete_item("preferences_dialog")
+                    self._show_preferences_dialog()
+                else:
+                    error_msg = "; ".join(result.get("errors", []))
+                    dpg.set_value(self.status_text, f"LLM installation failed: {error_msg}")
+                    if dpg.does_item_exist("install_llm_button"):
+                        dpg.configure_item("install_llm_button", enabled=True)
+            except Exception as e:
+                dpg.set_value(self.status_text, f"LLM installation error: {str(e)}")
+                if dpg.does_item_exist("install_llm_button"):
+                    dpg.configure_item("install_llm_button", enabled=True)
+        
+        # Start installation in background thread
+        thread = threading.Thread(target=install_thread, daemon=True)
+        thread.start()
     
     def _on_max_tokens_changed(self, sender, app_data) -> None:
         """Handle max tokens slider change."""

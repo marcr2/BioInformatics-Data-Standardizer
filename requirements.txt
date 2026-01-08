@@ -19,11 +19,14 @@ pyarrow>=14.0.0
 scikit-learn>=1.3.0
 chromadb>=0.4.0
 
-# Local LLM (100% local, no API calls)
+# Local LLM (100% local, no API calls) - OPTIONAL
+# These packages are only needed if you want to use LLM-based processing features.
+# The application can run in rules-based mode without these dependencies.
 # NOTE: PyTorch is installed separately in install.bat (Windows) or install.sh (Linux) with CUDA support
 # If installing manually, use: pip install torch --index-url https://download.pytorch.org/whl/cu128
 # (CUDA 12.8 supports Blackwell/RTX 50-series GPUs with compute capability 12.0)
 # For CPU-only: pip install torch
+# You can install LLM support later from Preferences -> Install LLM button
 transformers>=4.35.0
 accelerate>=0.24.0
 bitsandbytes>=0.41.0
